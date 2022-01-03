@@ -19,16 +19,20 @@ namespace utility::re_array {
 #include "REType.hpp"
 #include "ReClass.hpp"
 
+namespace sdk {
+struct RETypeDefinition;
+}
+
 namespace utility::re_class_info {
 static via::clr::VMObjType get_vm_type(::REClassInfo* c) {
     if (c == nullptr) {
         return via::clr::VMObjType::NULL_;
     }
 
-#ifndef RE8
-    return (via::clr::VMObjType)c->objectType;
-#else
+#if defined(RE8) || defined(MHRISE)
     return (via::clr::VMObjType)(c->objectFlags >> 5);
+#else
+    return (via::clr::VMObjType)c->objectType;
 #endif
 }
 } // namespace utility::re_type
@@ -41,6 +45,22 @@ namespace utility::re_array {
     template<typename T> static T* get_ptr_element(::REArrayBase* container, int idx);
     template<typename T> static T* get_element(::REArrayBase* container, int idx);
 
+    static ::sdk::RETypeDefinition* get_contained_type(::REArrayBase* container) {
+        if (container == nullptr || container->containedType == nullptr) {
+            return nullptr;
+        }
+
+    #ifndef RE7
+        return (::sdk::RETypeDefinition*)container->containedType;
+    #else
+        if (container->containedType->classInfo == nullptr) {
+            return nullptr;
+        }
+
+        return (::sdk::RETypeDefinition*)container->containedType->classInfo;
+    #endif
+    }
+
     static uint32_t get_element_size(::REArrayBase* container) {
         if (container == nullptr || container->containedType == nullptr) {
             return 0;
@@ -50,7 +70,7 @@ namespace utility::re_array {
             return sizeof(void*);
         }
 
-#ifdef RE8
+#if defined(RE8) || defined(MHRISE)
         const auto element_size = utility::re_type::get_value_type_size(container->containedType->type);
 #else
         const auto element_size = container->info->classInfo->elementSize;
@@ -64,7 +84,15 @@ namespace utility::re_array {
             return false;
         }
 
+    #ifndef RE7
         return utility::re_class_info::get_vm_type(container->containedType) == via::clr::VMObjType::ValType;
+    #else
+        if (container->containedType->classInfo == nullptr) {
+            return false;
+        }
+
+        return utility::re_class_info::get_vm_type(container->containedType->classInfo) == via::clr::VMObjType::ValType;
+    #endif
     }
 
     template<typename T>

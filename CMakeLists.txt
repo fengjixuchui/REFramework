@@ -11,20 +11,16 @@ option(BAREBONES "Barebones build without game-specific features/hooks" OFF)
 
 option(RE2 "RE2 build" OFF)
 option(RE3 "RE3 build" OFF)
+option(RE7 "RE7 build" OFF)
 option(RE8 "RE8 build" OFF)
 option(DMC5 "DMC5 build" OFF)
-
-include_directories(${CMAKE_SOURCE_DIR}/dependencies)
-include_directories(${CMAKE_SOURCE_DIR}/dependencies/imgui)
-include_directories(${CMAKE_SOURCE_DIR}/dependencies/minhook/include)
-include_directories(${CMAKE_SOURCE_DIR}/dependencies/spdlog/include)
-include_directories(${CMAKE_SOURCE_DIR}/dependencies/glm)
+option(MHRISE "MHRISE build" OFF)
 
 # set output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:threadSafeInit- /MP")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
 
 foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
     string(TOUPPER ${OUTPUTCONFIG} OUTPUTCONFIG)
@@ -38,6 +34,7 @@ endforeach(OUTPUTCONFIG CMAKE_CONFIGURATION_TYPES)
 
 # Statically compile runtime
 string(REGEX REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+string(REGEX REPLACE "/MD" "/MT" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
 
 add_subdirectory(dependencies)
 
@@ -54,16 +51,20 @@ macro (add_game game_name)
     set(GAME_NAME ${game_name})
 
     add_subdirectory(src ${CMAKE_BINARY_DIR}/${game_name})
+    add_subdirectory(example_dll ${CMAKE_BINARY_DIR}/${game_name}/example_dll)
 
     set(${game_name} OFF)
 endmacro()
 
 if (SINGLE_BUILD)
+    add_game(MHRISE)
     add_game(DMC5)
     add_game(RE2)
     add_game(RE3)
+    add_game(RE7)
     add_game(RE8)
 else()
     set(GAME_NAME GAME)
     add_subdirectory(src)
+    add_subdirectory(example_dll)
 endif()

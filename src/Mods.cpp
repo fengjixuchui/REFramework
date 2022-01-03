@@ -1,13 +1,16 @@
 #include <spdlog/spdlog.h>
 
 #include "mods/IntegrityCheckBypass.hpp"
-#include "mods/PositionHooks.hpp"
+#include "mods/Hooks.hpp"
 #include "mods/Camera.hpp"
 #include "mods/FirstPerson.hpp"
 #include "mods/DeveloperTools.hpp"
 #include "mods/ManualFlashlight.hpp"
 #include "mods/FreeCam.hpp"
 #include "mods/Scene.hpp"
+#include "mods/VR.hpp"
+#include "mods/ScriptRunner.hpp"
+#include "mods/APIProxy.hpp"
 
 #include "Mods.hpp"
 
@@ -18,25 +21,41 @@ Mods::Mods()
 #endif
 
 #ifndef BAREBONES
-    m_mods.emplace_back(std::make_unique<PositionHooks>());
+    m_mods.emplace_back(std::make_unique<Hooks>());
+
+    m_mods.emplace_back(VR::get());
+    m_mods.emplace_back(ScriptRunner::get());
+    m_mods.emplace_back(APIProxy::get());
 
 #ifndef RE8
-#ifndef DMC5
-    m_mods.emplace_back(std::make_unique<FirstPerson>());
+
+#if defined(RE2) || defined(RE3)
+    m_mods.emplace_back(FirstPerson::get());
 #endif
+
 #else
     m_mods.emplace_back(std::make_unique<Camera>());
 #endif
 
-#ifndef DMC5
+#if defined(RE2) || defined(RE3) || defined(RE8)
     m_mods.emplace_back(std::make_unique<ManualFlashlight>());
 #endif
+
     m_mods.emplace_back(std::make_unique<FreeCam>());
+
+#ifndef RE7
     m_mods.emplace_back(std::make_unique<SceneMods>());
 #endif
 
+#endif
+
 #ifdef DEVELOPER
-    m_mods.emplace_back(std::make_unique<DeveloperTools>());
+    auto dev_tools = std::make_shared<DeveloperTools>();
+    m_mods.emplace_back(dev_tools);
+
+    for (auto& tool : dev_tools->get_tools()) {
+        m_mods.emplace_back(tool);
+    }
 #endif
 }
 
@@ -60,9 +79,21 @@ std::optional<std::string> Mods::on_initialize() const {
     return std::nullopt;
 }
 
+void Mods::on_pre_imgui_frame() const {
+    for (auto& mod : m_mods) {
+        mod->on_pre_imgui_frame();
+    }
+}
+
 void Mods::on_frame() const {
     for (auto& mod : m_mods) {
         mod->on_frame();
+    }
+}
+
+void Mods::on_post_frame() const {
+    for (auto& mod : m_mods) {
+        mod->on_post_frame();
     }
 }
 
@@ -72,3 +103,8 @@ void Mods::on_draw_ui() const {
     }
 }
 
+void Mods::on_device_reset() const {
+    for (auto& mod : m_mods) {
+        mod->on_device_reset();
+    }
+}
