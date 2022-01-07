@@ -106,7 +106,7 @@ public:
     }
 
     bool is_using_controllers() const {
-        return !m_controllers.empty() && (std::chrono::steady_clock::now() - m_last_controller_update) <= std::chrono::seconds(10);
+        return !m_controllers.empty() && (std::chrono::steady_clock::now() - m_last_controller_update) <= std::chrono::seconds((int32_t)m_motion_controls_inactivity_timer->value());
     }
 
     bool is_hmd_active() const {
@@ -366,9 +366,13 @@ private:
         { "bindings_knuckles.json", bindings_knuckles }
     };
 
+    const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
     const ModToggle::Ptr m_use_afr{ ModToggle::create(generate_name("AlternateFrameRendering"), false) };
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
+    const ModSlider::Ptr m_motion_controls_inactivity_timer{ ModSlider::create(generate_name("MotionControlsInactivityTimer"), 10.0f, 100.0f, 10.0f) };
+    const ModSlider::Ptr m_joystick_deadzone{ ModSlider::create(generate_name("JoystickDeadzone"), 0.01f, 0.9f, 0.15f) };
+
     const ModToggle::Ptr m_force_fps_settings{ ModToggle::create(generate_name("ForceFPS"), true) };
     const ModToggle::Ptr m_force_aa_settings{ ModToggle::create(generate_name("ForceAntiAliasing"), true) };
     const ModToggle::Ptr m_force_motionblur_settings{ ModToggle::create(generate_name("ForceMotionBlur"), true) };
@@ -378,9 +382,12 @@ private:
     const ModToggle::Ptr m_force_lensflares_settings{ ModToggle::create(generate_name("ForceLensFlares"), true) };
 
     ValueList m_options{
+        *m_decoupled_pitch,
         *m_use_afr,
         *m_use_custom_view_distance,
         *m_view_distance,
+        *m_motion_controls_inactivity_timer,
+        *m_joystick_deadzone,
         *m_force_fps_settings,
         *m_force_aa_settings,
         *m_force_motionblur_settings,

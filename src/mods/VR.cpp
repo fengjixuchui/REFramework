@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #include <fstream>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -19,6 +21,7 @@
 #include "sdk/Renderer.hpp"
 #include "sdk/Application.hpp"
 #include "sdk/Renderer.hpp"
+#include "sdk/REMath.hpp"
 
 #include "utility/Scan.hpp"
 #include "utility/FunctionHook.hpp"
@@ -28,7 +31,6 @@
 
 #include "VR.hpp"
 
-constexpr auto CONTROLLER_DEADZONE = 0.1f;
 constexpr std::string_view COULD_NOT_LOAD_OPENVR = "Could not load openvr_api.dll";
 
 bool inside_on_end = false;
@@ -242,7 +244,9 @@ void VR::inputsystem_update_hook(void* ctx, REManagedObject* input_system) {
         }
     };
 
-    if (left_axis_len > CONTROLLER_DEADZONE) {
+    const auto deadzone = mod->m_joystick_deadzone->value();
+
+    if (left_axis_len > deadzone) {
         mod->m_last_controller_update = now;
         is_using_controller = true;
 
@@ -253,7 +257,7 @@ void VR::inputsystem_update_hook(void* ctx, REManagedObject* input_system) {
         keep_button_down(app::ropeway::InputDefine::Kind::UI_L_STICK);
     }
 
-    if (right_axis_len > CONTROLLER_DEADZONE) {
+    if (right_axis_len > deadzone) {
         mod->m_last_controller_update = now;
         is_using_controller = true;
 
@@ -755,11 +759,11 @@ bool VR::is_any_action_down() {
     const auto left_axis = get_left_stick_axis();
     const auto right_axis = get_right_stick_axis();
 
-    if (glm::length(left_axis) >= CONTROLLER_DEADZONE) {
+    if (glm::length(left_axis) >= m_joystick_deadzone->value()) {
         return true;
     }
 
-    if (glm::length(right_axis) >= CONTROLLER_DEADZONE) {
+    if (glm::length(right_axis) >= m_joystick_deadzone->value()) {
         return true;
     }
 
@@ -988,7 +992,19 @@ void VR::update_camera_origin() {
     }
     
     const auto current_hmd_rotation = glm::quat{get_rotation(0)};
-    const auto new_rotation = m_original_camera_rotation * current_hmd_rotation;
+
+    glm::quat new_rotation{};
+    glm::quat camera_rotation{};
+    
+    if (!m_decoupled_pitch->value()) {
+        camera_rotation = m_original_camera_rotation;
+        new_rotation = glm::normalize(m_original_camera_rotation * current_hmd_rotation);
+    } else if (m_decoupled_pitch->value()) {
+        // facing forward matrix
+        const auto camera_rotation_matrix = utility::math::remove_y_component(Matrix4x4f{m_original_camera_rotation});
+        camera_rotation = glm::quat{camera_rotation_matrix};
+        new_rotation = glm::normalize(camera_rotation * current_hmd_rotation);
+    }
     
     const auto current_relative_eye_transform = get_current_eye_transform(false);
     const auto current_relative_eye_pos = current_hmd_rotation * current_relative_eye_transform[3];
@@ -996,7 +1012,7 @@ void VR::update_camera_origin() {
     auto current_relative_pos = (get_position(0) - m_standing_origin) /*+ current_relative_eye_pos*/;
     current_relative_pos.w = 0.0f;
 
-    auto current_head_pos = m_original_camera_rotation * current_relative_pos;
+    auto current_head_pos = camera_rotation * current_relative_pos;
 
     sdk::set_joint_rotation(camera_joint, new_rotation);
 
@@ -2318,12 +2334,14 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     if (!is_weapon_dial_down) {
         // DPad Up: Shortcut Up
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_UP, is_dpad_up_down);
+        set_button_state(app::ropeway::InputDefine::Kind::UI_MAP_UP, is_dpad_up_down);
 
         // DPad Right: Shortcut Right
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_RIGHT, is_dpad_right_down);
 
         // DPad Down: Shortcut Down
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_DOWN, is_dpad_down_down);
+        set_button_state(app::ropeway::InputDefine::Kind::UI_MAP_DOWN, is_dpad_down_down);
 
         // DPad Left: Shortcut Left
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_LEFT, is_dpad_left_down);
@@ -2350,8 +2368,9 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     }
 
     bool moved_sticks = false;
+    const auto deadzone = m_joystick_deadzone->value();
 
-    if (left_axis_len > CONTROLLER_DEADZONE) {
+    if (left_axis_len > deadzone) {
         moved_sticks = true;
 
         // Override the left stick's axis values to the VR controller's values
@@ -2361,7 +2380,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         update_method->call<void*>(ctx, lstick, &axis, &axis);
     }
 
-    if (right_axis_len > CONTROLLER_DEADZONE) {
+    if (right_axis_len > deadzone) {
         moved_sticks = true;
 
         // Override the right stick's axis values to the VR controller's values
@@ -2382,11 +2401,11 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         m_standing_origin = glm::lerp(m_standing_origin, new_pos, ((float)highest_length * delta) * 0.01f);
     }
 
-    set_button_state(app::ropeway::InputDefine::Kind::MOVE, left_axis_len > CONTROLLER_DEADZONE);
-    set_button_state(app::ropeway::InputDefine::Kind::UI_L_STICK, left_axis_len > CONTROLLER_DEADZONE);
+    set_button_state(app::ropeway::InputDefine::Kind::MOVE, left_axis_len > deadzone);
+    set_button_state(app::ropeway::InputDefine::Kind::UI_L_STICK, left_axis_len > deadzone);
 
-    set_button_state(app::ropeway::InputDefine::Kind::WATCH, right_axis_len > CONTROLLER_DEADZONE);
-    set_button_state(app::ropeway::InputDefine::Kind::UI_R_STICK, right_axis_len > CONTROLLER_DEADZONE);
+    set_button_state(app::ropeway::InputDefine::Kind::WATCH, right_axis_len > deadzone);
+    set_button_state(app::ropeway::InputDefine::Kind::UI_R_STICK, right_axis_len > deadzone);
     //set_button_state(app::ropeway::InputDefine::Kind::RUN, right_axis_len > 0.01f);
 
     // Causes the right stick to take effect properly
@@ -2407,11 +2426,11 @@ void VR::openvr_input_to_re_engine() {
 
     bool moved_sticks = false;
 
-    if (left_axis_len > CONTROLLER_DEADZONE) {
+    if (left_axis_len > m_joystick_deadzone->value()) {
         moved_sticks = true;
     }
 
-    if (right_axis_len > CONTROLLER_DEADZONE) {
+    if (right_axis_len > m_joystick_deadzone->value()) {
         moved_sticks = true;
     }
 
@@ -2472,6 +2491,7 @@ void VR::on_draw_ui() {
     ImGui::DragFloat3("Overlay Position", (float*)&m_overlay_position, 0.01f, -100.0f, 100.0f);
 
     m_use_afr->draw("Use AFR");
+    m_decoupled_pitch->draw("Decoupled Camera Pitch");
 
     if (ImGui::Checkbox("Positional Tracking", &m_positional_tracking)) {
     }
@@ -2481,6 +2501,8 @@ void VR::on_draw_ui() {
 
     m_use_custom_view_distance->draw("Use Custom View Distance");
     m_view_distance->draw("View Distance/FarZ");
+    m_motion_controls_inactivity_timer->draw("Inactivity Timer");
+    m_joystick_deadzone->draw("Joystick Deadzone");
 
     ImGui::DragFloat("UI Scale", &m_ui_scale, 0.005f, 0.0f, 100.0f);
 
@@ -2644,7 +2666,10 @@ Vector2f VR::get_joystick_axis(vr::VRInputValueHandle_t handle) const {
     vr::InputAnalogActionData_t data{};
     vr::VRInput()->GetAnalogActionData(m_action_joystick, &data, sizeof(data), handle);
 
-    return Vector2f{ data.x, data.y };
+    const auto deadzone = m_joystick_deadzone->value();
+    const auto out = Vector2f{ data.x, data.y };
+
+    return glm::length(out) > deadzone ? out : Vector2f{};
 }
 
 Vector2f VR::get_left_stick_axis() const {
