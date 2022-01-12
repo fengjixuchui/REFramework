@@ -47,6 +47,12 @@ public:
     void on_pre_application_entry(void* entry, const char* name, size_t hash) override;
     void on_application_entry(void* entry, const char* name, size_t hash) override;
 
+    void on_draw_ui() override;
+    void on_device_reset() override;
+
+    void on_config_load(const utility::Config& cfg) override;
+    void on_config_save(utility::Config& cfg) override;
+
     // Application entries
     void on_pre_update_hid(void* entry);
     void on_update_hid(void* entry);
@@ -56,12 +62,6 @@ public:
     void on_end_rendering(void* entry);
     void on_pre_wait_rendering(void* entry);
     void on_wait_rendering(void* entry);
-
-    void on_draw_ui() override;
-    void on_device_reset() override;
-
-    void on_config_load(const utility::Config& cfg) override;
-    void on_config_save(utility::Config& cfg) override;
 
     auto get_hmd() const {
         return m_hmd;
@@ -95,10 +95,13 @@ public:
     Vector4f get_standing_origin();
     void set_standing_origin(const Vector4f& origin);
 
+    glm::quat get_rotation_offset();
+    void set_rotation_offset(const glm::quat& offset);
+    void recenter_view();
+
     Vector4f get_current_offset();
 
     Matrix4x4f get_current_eye_transform(bool flip = false);
-    Matrix4x4f get_current_rotation_offset();
     Matrix4x4f get_current_projection_matrix(bool flip = false);
 
     auto& get_controllers() const {
@@ -111,6 +114,22 @@ public:
 
     bool is_hmd_active() const {
         return m_is_hmd_active && m_wgp_initialized;
+    }
+    
+    bool is_openvr_loaded() const {
+        return m_openvr_loaded;
+    }
+
+    bool is_using_hmd_oriented_audio() {
+        return m_hmd_oriented_audio->value();
+    }
+
+    void toggle_hmd_oriented_audio() {
+        m_hmd_oriented_audio->toggle();
+    }
+
+    const Matrix4x4f& get_last_render_matrix() {
+        return m_render_camera_matrix;
     }
 
     Vector4f get_position(uint32_t index);
@@ -162,6 +181,7 @@ private:
     static Matrix4x4f* camera_get_projection_matrix_hook(REManagedObject* camera, Matrix4x4f* result);
     static Matrix4x4f* camera_get_view_matrix_hook(REManagedObject* camera, Matrix4x4f* result);
     static void overlay_draw_hook(void* layer, void* render_context);
+    static void wwise_listener_update_hook(void* listener);
 
     //static float get_sharpness_hook(void* tonemapping);
 
@@ -172,6 +192,7 @@ private:
     std::optional<std::string> hijack_input();
     std::optional<std::string> hijack_camera();
     std::optional<std::string> hijack_overlay_renderer();
+    std::optional<std::string> hijack_wwise_listeners(); // audio hook
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing openvr");
@@ -197,7 +218,10 @@ private:
     void update_action_states();
     void update_camera(); // if not in firstperson mode
     void update_camera_origin(); // every frame
+    void apply_hmd_transform(::REJoint* camera_joint);
+    void update_audio_camera();
     void update_render_matrix();
+    void restore_audio_camera(); // after wwise listener update
     void restore_camera(); // After rendering
     void set_lens_distortion(bool value);
     void disable_bad_effects();
@@ -213,8 +237,10 @@ private:
     Patch::Ptr m_overlay_draw_patch{};
     
     std::recursive_mutex m_openvr_mtx{};
+    std::recursive_mutex m_wwise_mtx{};
     std::shared_mutex m_pose_mtx{};
     std::shared_mutex m_eyes_mtx{};
+    std::shared_mutex m_rotation_mtx{};
 
     REManagedObject* m_main_view{nullptr};
 
@@ -237,6 +263,7 @@ private:
     std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> m_game_poses;
 
     Vector4f m_standing_origin{ 0.0f, 1.5f, 0.0f, 0.0f };
+    glm::quat m_rotation_offset{ glm::identity<glm::quat>() };
 
     std::vector<int32_t> m_controllers{};
     std::unordered_set<int32_t> m_controllers_set{};
@@ -265,6 +292,7 @@ private:
     vr::VRActionHandle_t m_action_re2_quickturn{};
     vr::VRActionHandle_t m_action_re2_firstperson_toggle{};
     vr::VRActionHandle_t m_action_re2_reset_view{};
+    vr::VRActionHandle_t m_action_re2_change_ammo{};
 
     bool m_was_firstperson_toggle_down{false};
 
@@ -284,7 +312,8 @@ private:
         { "/actions/default/in/RE3_Dodge", m_action_re3_dodge },
         { "/actions/default/in/RE2_Quickturn", m_action_re2_quickturn },
         { "/actions/default/in/RE2_FirstPerson_Toggle", m_action_re2_firstperson_toggle },
-        { "/actions/default/in/RE2_Reset_View", m_action_re2_reset_view }
+        { "/actions/default/in/RE2_Reset_View", m_action_re2_reset_view },
+        { "/actions/default/in/RE2_Change_Ammo", m_action_re2_change_ammo },
     };
 
     // Input sources
@@ -311,8 +340,12 @@ private:
     vrmod::OverlayComponent m_overlay_component{};
 
     Vector4f m_original_camera_position{ 0.0f, 0.0f, 0.0f, 0.0f };
-    Matrix4x4f m_render_camera_matrix{ glm::identity<Matrix4x4f>() };
     glm::quat m_original_camera_rotation{ glm::identity<glm::quat>() };
+
+    Vector4f m_original_audio_camera_position{ 0.0f, 0.0f, 0.0f, 0.0f };
+    glm::quat m_original_audio_camera_rotation{ glm::identity<glm::quat>() };
+
+    Matrix4x4f m_render_camera_matrix{ glm::identity<Matrix4x4f>() };
 
     sdk::helpers::NativeObject m_via_hid_gamepad{ "via.hid.GamePad" };
 
@@ -335,6 +368,7 @@ private:
     bool m_was_hmd_active{true};
     bool m_wgp_initialized{false};
     bool m_needs_camera_restore{false};
+    bool m_needs_audio_restore{false};
     bool m_in_render{false};
     bool m_in_lightshaft{false};
     bool m_request_reinitialize_openvr{false};
@@ -366,9 +400,12 @@ private:
         { "bindings_knuckles.json", bindings_knuckles }
     };
 
+    const ModKey::Ptr m_set_standing_key{ ModKey::create(generate_name("SetStandingOriginKey")) };
+    const ModKey::Ptr m_recenter_view_key{ ModKey::create(generate_name("RecenterViewKey")) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
     const ModToggle::Ptr m_use_afr{ ModToggle::create(generate_name("AlternateFrameRendering"), false) };
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
+    const ModToggle::Ptr m_hmd_oriented_audio{ ModToggle::create(generate_name("HMDOrientedAudio"), true) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
     const ModSlider::Ptr m_motion_controls_inactivity_timer{ ModSlider::create(generate_name("MotionControlsInactivityTimer"), 10.0f, 100.0f, 10.0f) };
     const ModSlider::Ptr m_joystick_deadzone{ ModSlider::create(generate_name("JoystickDeadzone"), 0.01f, 0.9f, 0.15f) };
@@ -382,9 +419,12 @@ private:
     const ModToggle::Ptr m_force_lensflares_settings{ ModToggle::create(generate_name("ForceLensFlares"), true) };
 
     ValueList m_options{
+        *m_set_standing_key,
+        *m_recenter_view_key,
         *m_decoupled_pitch,
         *m_use_afr,
         *m_use_custom_view_distance,
+        *m_hmd_oriented_audio,
         *m_view_distance,
         *m_motion_controls_inactivity_timer,
         *m_joystick_deadzone,

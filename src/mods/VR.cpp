@@ -53,6 +53,7 @@ std::unique_ptr<FunctionHook> g_input_hook{};
 std::unique_ptr<FunctionHook> g_projection_matrix_hook{};
 std::unique_ptr<FunctionHook> g_view_matrix_hook{};
 std::unique_ptr<FunctionHook> g_overlay_draw_hook{};
+std::unique_ptr<FunctionHook> g_wwise_listener_update_hook{};
 //std::unique_ptr<FunctionHook> g_get_sharpness_hook{};
 
 #ifdef RE7
@@ -296,6 +297,64 @@ void VR::overlay_draw_hook(void* layer, void* render_ctx) {
     }
 }
 
+void VR::wwise_listener_update_hook(void* listener) {
+    auto original_func = g_wwise_listener_update_hook->get_original<decltype(VR::wwise_listener_update_hook)>();
+
+    if (!g_framework->is_ready()) {
+        original_func(listener);
+        return;
+    }
+
+    auto mod = VR::get();
+
+    if (!mod->m_is_hmd_active || !mod->m_openvr_loaded) {
+        original_func(listener);
+        return;
+    }
+
+#if defined(RE2) || defined(RE3)
+    if (FirstPerson::get()->will_be_used()) {
+        original_func(listener);
+        return;
+    }
+#endif
+
+
+    if (!mod->m_hmd_oriented_audio->value()) {
+        original_func(listener);
+        return;
+    }
+
+    std::scoped_lock _{mod->m_wwise_mtx};
+    mod->update_audio_camera();
+
+#ifndef RE7
+    constexpr auto CAMERA_OFFSET = 0x50;
+#else
+    constexpr auto CAMERA_OFFSET = 0x58;
+#endif
+
+    auto& listener_camera = *(::REManagedObject**)((uintptr_t)listener + CAMERA_OFFSET);
+    bool changed = false;
+
+    if (listener_camera == nullptr) {
+        auto primary_camera = sdk::get_primary_camera();
+
+        if (primary_camera != nullptr) {
+            listener_camera = primary_camera;
+            changed = true;
+        }
+    }
+
+    original_func(listener);
+
+    if (changed) {
+        listener_camera = nullptr;
+    }
+
+    mod->restore_audio_camera();
+}
+
 // put it on the backburner
 /*
 float VR::get_sharpness_hook(void* tonemapping) {
@@ -359,6 +418,12 @@ std::optional<std::string> VR::on_initialize() {
         return hijack_error;
     }
 
+    hijack_error = hijack_wwise_listeners();
+
+    if (hijack_error) {
+        return hijack_error;
+    }
+
     // all OK
     return Mod::on_initialize();
 }
@@ -377,6 +442,9 @@ void VR::on_lua_state_created(sol::state& lua) {
         "get_current_projection_matrix", &VR::get_current_projection_matrix,
         "get_standing_origin", &VR::get_standing_origin,
         "set_standing_origin", &VR::set_standing_origin,
+        "get_rotation_offset", &VR::get_rotation_offset,
+        "set_rotation_offset", &VR::set_rotation_offset,
+        "recenter_view", &VR::recenter_view,
         "get_action_set", &VR::get_action_set,
         "get_active_action_set", &VR::get_active_action_set,
         "get_action_trigger", &VR::get_action_trigger,
@@ -388,8 +456,11 @@ void VR::on_lua_state_created(sol::state& lua) {
         "get_left_joystick", &VR::get_left_joystick,
         "get_right_joystick", &VR::get_right_joystick,
         "is_using_controllers", &VR::is_using_controllers,
+        "is_openvr_loaded", &VR::is_openvr_loaded,
         "is_hmd_active", &VR::is_hmd_active,
-        "is_action_active", &VR::is_action_active
+        "is_action_active", &VR::is_action_active,
+        "is_using_hmd_oriented_audio", &VR::is_using_hmd_oriented_audio,
+        "toggle_hmd_oriented_audio", &VR::toggle_hmd_oriented_audio
     );
 
     lua["vrmod"] = this;
@@ -701,6 +772,69 @@ std::optional<std::string> VR::hijack_overlay_renderer() {
     return std::nullopt;
 }
 
+std::optional<std::string> VR::hijack_wwise_listeners() {
+    const auto t = sdk::RETypeDB::get()->find_type("via.wwise.WwiseListener");
+
+    if (t == nullptr) {
+        return "VR init failed: via.wwise.WwiseListener type not found.";
+    }
+
+    const auto update_method = t->get_method("update");
+
+    if (update_method == nullptr) {
+        return "VR init failed: via.wwise.WwiseListener.update method not found.";
+    }
+
+    const auto func_wrapper = update_method->get_function();
+
+    if (func_wrapper == nullptr) {
+        return "VR init failed: via.wwise.WwiseListener.update native function not found.";
+    }
+    
+    spdlog::info("via.wwise.WwiseListener.update: {:x}", (uintptr_t)func_wrapper);
+    
+    // Use hde to disassemble the method and find the first jmp, which jmps to the real function
+    // in the vtable
+    const auto jmp = utility::scan_disasm((uintptr_t)func_wrapper, 10, "48 FF");
+
+    if (!jmp) {
+        return "VR init failed: could not find jmp opcode in via.wwise.WwiseListener.update native function.";
+    }
+
+    const auto vtable_index = *(uint8_t*)(*jmp + 3) / sizeof(void*);
+    spdlog::info("via.wwise.WwiseListener.update vtable index: {}", vtable_index);
+
+    const void* fake_obj = t->create_instance_full();
+
+    if (fake_obj == nullptr) {
+        return "VR init failed: Failed to create fake via.wwise.WwiseListener instance.";
+    }
+
+    auto obj_vtable = *(void***)fake_obj;
+
+    if (obj_vtable == nullptr) {
+        return "VR init failed: via.wwise.WwiseListener vtable not found.";
+    }
+
+    spdlog::info("via.wwise.WwiseListener vtable: {:x}", (uintptr_t)obj_vtable - g_framework->get_module());
+
+    auto update_native = obj_vtable[vtable_index];
+
+    if (update_native == 0) {
+        return "VR init failed: via.wwise.WwiseListener update native not found.";
+    }
+
+    spdlog::info("via.wwise.WwiseListener.update: {:x}", (uintptr_t)update_native);
+
+    g_wwise_listener_update_hook = std::make_unique<FunctionHook>(update_native, wwise_listener_update_hook);
+
+    if (!g_wwise_listener_update_hook->create()) {
+        return "VR init failed: via.wwise.WwiseListener update native function hook failed.";
+    }
+
+    return std::nullopt;
+}
+
 bool VR::detect_controllers() {
     // already detected
     if (!m_controllers.empty()) {
@@ -821,6 +955,7 @@ void VR::update_hmd_state() {
         memcpy(m_render_poses.data(), m_real_render_poses.data(), sizeof(m_render_poses));
 
         if (wants_reset_origin) {
+            m_rotation_offset = glm::identity<glm::quat>();
             m_standing_origin = get_position_unsafe(vr::k_unTrackedDeviceIndex_Hmd);
         }
     }
@@ -887,6 +1022,14 @@ void VR::update_action_states() {
 
         //reinitialize_openvr();
         m_request_reinitialize_openvr = true;
+    }
+
+    if (m_recenter_view_key->is_key_down_once()) {
+        recenter_view();
+    }
+
+    if (m_set_standing_key->is_key_down_once()) {
+        set_standing_origin(get_position(0));
     }
 }
 
@@ -990,9 +1133,13 @@ void VR::update_camera_origin() {
         m_original_camera_position = sdk::get_joint_position(camera_joint);
         m_original_camera_rotation = sdk::get_joint_rotation(camera_joint);
     }
-    
-    const auto current_hmd_rotation = glm::quat{get_rotation(0)};
 
+    apply_hmd_transform(camera_joint);
+}
+
+void VR::apply_hmd_transform(::REJoint* camera_joint) {
+    const auto current_hmd_rotation = glm::normalize(m_rotation_offset * glm::quat{get_rotation(0)});
+    
     glm::quat new_rotation{};
     glm::quat camera_rotation{};
     
@@ -1005,11 +1152,8 @@ void VR::update_camera_origin() {
         camera_rotation = glm::quat{camera_rotation_matrix};
         new_rotation = glm::normalize(camera_rotation * current_hmd_rotation);
     }
-    
-    const auto current_relative_eye_transform = get_current_eye_transform(false);
-    const auto current_relative_eye_pos = current_hmd_rotation * current_relative_eye_transform[3];
 
-    auto current_relative_pos = (get_position(0) - m_standing_origin) /*+ current_relative_eye_pos*/;
+    auto current_relative_pos = m_rotation_offset * (get_position(0) - m_standing_origin) /*+ current_relative_eye_pos*/;
     current_relative_pos.w = 0.0f;
 
     auto current_head_pos = camera_rotation * current_relative_pos;
@@ -1019,6 +1163,36 @@ void VR::update_camera_origin() {
     if (m_positional_tracking) {
         sdk::set_joint_position(camera_joint, m_original_camera_position + current_head_pos);   
     }
+}
+
+void VR::update_audio_camera() {
+    if (!m_is_hmd_active) {
+        return;
+    }
+
+    auto camera = sdk::get_primary_camera();
+
+    if (camera == nullptr) {
+        return;
+    }
+
+    auto camera_object = utility::re_component::get_game_object(camera);
+
+    if (camera_object == nullptr || camera_object->transform == nullptr) {
+        return;
+    }
+
+    auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+
+    if (camera_joint == nullptr) {
+        return;
+    }
+
+    m_original_audio_camera_position = sdk::get_joint_position(camera_joint);
+    m_original_audio_camera_rotation = sdk::get_joint_rotation(camera_joint);
+    m_needs_audio_restore = true;
+
+    apply_hmd_transform(camera_joint);
 }
 
 void VR::update_render_matrix() {
@@ -1042,6 +1216,47 @@ void VR::update_render_matrix() {
 
     m_render_camera_matrix = Matrix4x4f{sdk::get_joint_rotation(camera_joint)};
     m_render_camera_matrix[3] = sdk::get_joint_position(camera_joint);
+}
+
+void VR::restore_audio_camera() {
+    if (!m_needs_audio_restore) {
+        return;
+    }
+
+#if defined(RE2) || defined(RE3)
+    if (FirstPerson::get()->will_be_used()) {
+        m_needs_audio_restore = false;
+        return;
+    }
+#endif
+
+    auto camera = sdk::get_primary_camera();
+
+    if (camera == nullptr) {
+        m_needs_audio_restore = false;
+        return;
+    }
+
+    auto camera_object = utility::re_component::get_game_object(camera);
+
+    if (camera_object == nullptr || camera_object->transform == nullptr) {
+        m_needs_audio_restore = false;
+        return;
+    }
+
+    //camera_object->transform->worldTransform = m_original_camera_matrix;
+
+    auto joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+
+    if (joint == nullptr) {
+        m_needs_audio_restore = false;
+        return;
+    }
+
+    sdk::set_joint_rotation(joint, m_original_audio_camera_rotation);
+    sdk::set_joint_position(joint, m_original_audio_camera_position);
+
+    m_needs_audio_restore = false;
 }
 
 void VR::restore_camera() {
@@ -1331,6 +1546,23 @@ void VR::set_standing_origin(const Vector4f& origin) {
     m_standing_origin = origin;
 }
 
+glm::quat VR::get_rotation_offset() {
+    std::shared_lock _{ m_rotation_mtx };
+
+    return m_rotation_offset;
+}
+
+void VR::set_rotation_offset(const glm::quat& offset) {
+    std::unique_lock _{ m_rotation_mtx };
+
+    m_rotation_offset = offset;
+}
+
+void VR::recenter_view() {
+    set_rotation_offset(glm::inverse(get_rotation(0)));
+    set_rotation_offset(glm::quat{utility::math::remove_y_component(Matrix4x4f{m_rotation_offset})});
+}
+
 Vector4f VR::get_current_offset() {
     if (!m_is_hmd_active) {
         return Vector4f{};
@@ -1363,14 +1595,6 @@ Matrix4x4f VR::get_current_eye_transform(bool flip) {
     return m_eyes[vr::Eye_Right];
 }
 
-Matrix4x4f VR::get_current_rotation_offset() {
-    if (!m_is_hmd_active) {
-        return glm::identity<Matrix4x4f>();
-    }
-
-    return glm::extractMatrixRotation(get_current_eye_transform());
-}
-
 Matrix4x4f VR::get_current_projection_matrix(bool flip) {
     if (!m_is_hmd_active) {
         return glm::identity<Matrix4x4f>();
@@ -1388,7 +1612,7 @@ Matrix4x4f VR::get_current_projection_matrix(bool flip) {
 }
 
 void VR::on_pre_imgui_frame() {
-    if (!m_is_hmd_active || !m_wgp_initialized) {
+    if (!m_openvr_loaded || !m_is_hmd_active || !m_wgp_initialized) {
         return;
     }
 
@@ -1826,6 +2050,7 @@ void VR::on_pre_begin_rendering(void* entry) {
 
     m_in_render = true;
 
+    // Use the gamepad/motion controller sticks to lerp the standing origin back to the center
     if (m_via_hid_gamepad.update()) {
         auto pad = sdk::call_object_func<REManagedObject*>(m_via_hid_gamepad.object, m_via_hid_gamepad.t, "get_LastInputDevice", sdk::get_thread_context(), m_via_hid_gamepad.object);
 
@@ -2145,6 +2370,22 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         return;
     }
 
+    static auto gui_master_type = sdk::RETypeDB::get()->find_type(game_namespace("gui.GUIMaster"));
+    static auto gui_master_get_instance = gui_master_type->get_method("get_Instance");
+    static auto gui_master_get_input = gui_master_type->get_method("get_Input");
+    static auto gui_master_input_type = gui_master_get_input->get_return_type();
+
+    // ??????
+#ifdef RE2
+    static auto input_set_is_trigger_move_up_d = gui_master_input_type->get_method("set_IsTriggerMoveUpD");
+    static auto input_set_is_trigger_move_down_d = gui_master_input_type->get_method("set_IsTriggerMoveDownD");
+#endif
+
+    auto gui_master = gui_master_get_instance->call<::REManagedObject*>(sdk::get_thread_context());
+    auto gui_input = gui_master != nullptr ? 
+                     gui_master_get_input->call<::REManagedObject*>(sdk::get_thread_context(), gui_master) : 
+                     (::REManagedObject*)nullptr;
+
     auto ctx = sdk::get_thread_context();
 
     static auto get_lstick_method = sdk::get_object_method(input_system, "get_LStick");
@@ -2194,6 +2435,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_re3_dodge_down = is_action_active(m_action_re3_dodge, m_left_joystick) || is_action_active(m_action_re3_dodge, m_right_joystick);
     const auto is_quickturn_down = is_action_active(m_action_re2_quickturn, m_left_joystick) || is_action_active(m_action_re2_quickturn, m_right_joystick);
     const auto is_reset_view_down = is_action_active(m_action_re2_reset_view, m_left_joystick) || is_action_active(m_action_re2_reset_view, m_right_joystick);
+    const auto is_change_ammo_down = is_action_active(m_action_re2_change_ammo, m_left_joystick) || is_action_active(m_action_re2_change_ammo, m_right_joystick);
 
     const auto is_left_system_button_down = is_action_active(m_action_system_button, m_left_joystick);
     const auto is_right_system_button_down = is_action_active(m_action_system_button, m_right_joystick);
@@ -2335,6 +2577,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         // DPad Up: Shortcut Up
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_UP, is_dpad_up_down);
         set_button_state(app::ropeway::InputDefine::Kind::UI_MAP_UP, is_dpad_up_down);
+        set_button_state(app::ropeway::InputDefine::Kind::UI_UP, is_dpad_up_down); // IsTriggerMoveUpD in RE3
 
         // DPad Right: Shortcut Right
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_RIGHT, is_dpad_right_down);
@@ -2342,15 +2585,30 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         // DPad Down: Shortcut Down
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_DOWN, is_dpad_down_down);
         set_button_state(app::ropeway::InputDefine::Kind::UI_MAP_DOWN, is_dpad_down_down);
+        set_button_state(app::ropeway::InputDefine::Kind::UI_DOWN, is_dpad_down_down); // IsTriggerMoveDownD in RE3
 
         // DPad Left: Shortcut Left
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_LEFT, is_dpad_left_down);
+
+        // well this was really annoying to figure out
+#ifdef RE2
+        if (is_dpad_up_down && gui_input != nullptr) {
+            input_set_is_trigger_move_up_d->call<void*>(ctx, gui_input, true);
+        }
+
+        if (is_dpad_down_down && gui_input != nullptr) {
+            input_set_is_trigger_move_down_d->call<void*>(ctx, gui_input, true);
+        }
+#endif
     } else {
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_UP, left_axis.y > 0.9f);
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_RIGHT, left_axis.x > 0.9f);
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_DOWN, left_axis.y < -0.9f);
         set_button_state(app::ropeway::InputDefine::Kind::SHORTCUT_LEFT, left_axis.x < -0.9f);
     }
+
+    // Change Ammo
+    set_button_state(app::ropeway::InputDefine::Kind::CHANGE_BULLET, is_change_ammo_down);
 
     // Left or Right System Button: Pause
     set_button_state(app::ropeway::InputDefine::Kind::PAUSE, is_left_system_button_down || is_right_system_button_down || m_handle_pause);
@@ -2476,8 +2734,12 @@ void VR::on_draw_ui() {
         m_standing_origin.y = get_position(0).y;
     }
 
-    if (ImGui::Button("Set Standing Origin")) {
+    if (ImGui::Button("Set Standing Origin") || m_set_standing_key->is_key_down_once()) {
         m_standing_origin = get_position(0);
+    }
+
+    if (ImGui::Button("Recenter View") || m_recenter_view_key->is_key_down_once()) {
+        recenter_view();
     }
 
     if (ImGui::Button("Reinitialize OpenVR")) {
@@ -2487,8 +2749,12 @@ void VR::on_draw_ui() {
     //ImGui::DragFloat4("Right Bounds", (float*)&m_right_bounds, 0.005f, -2.0f, 2.0f);
     //ImGui::DragFloat4("Left Bounds", (float*)&m_left_bounds, 0.005f, -2.0f, 2.0f);
 
-    ImGui::DragFloat3("Overlay Rotation", (float*)&m_overlay_rotation, 0.01f, -360.0f, 360.0f);
-    ImGui::DragFloat3("Overlay Position", (float*)&m_overlay_position, 0.01f, -100.0f, 100.0f);
+    ImGui::Separator();
+
+    m_set_standing_key->draw("Set Standing Origin Key");
+    m_recenter_view_key->draw("Recenter View Key");
+
+    ImGui::Separator();
 
     m_use_afr->draw("Use AFR");
     m_decoupled_pitch->draw("Decoupled Camera Pitch");
@@ -2499,12 +2765,15 @@ void VR::on_draw_ui() {
     /*if (ImGui::Checkbox("Depth Aided Reprojection", &m_depth_aided_reprojection)) {
     }*/
 
+    m_hmd_oriented_audio->draw("Head Oriented Audio");
     m_use_custom_view_distance->draw("Use Custom View Distance");
     m_view_distance->draw("View Distance/FarZ");
     m_motion_controls_inactivity_timer->draw("Inactivity Timer");
     m_joystick_deadzone->draw("Joystick Deadzone");
 
     ImGui::DragFloat("UI Scale", &m_ui_scale, 0.005f, 0.0f, 100.0f);
+    ImGui::DragFloat3("Overlay Rotation", (float*)&m_overlay_rotation, 0.01f, -360.0f, 360.0f);
+    ImGui::DragFloat3("Overlay Position", (float*)&m_overlay_position, 0.01f, -100.0f, 100.0f);
 
     ImGui::Separator();
     ImGui::Text("Graphical Options");
@@ -2533,6 +2802,21 @@ void VR::on_device_reset() {
     m_d3d11.on_reset(this);
     m_d3d12.on_reset(this);
     m_overlay_component.on_reset();
+
+    // so i guess device resets can happen between begin and end rendering...
+    if (m_in_render) {
+        spdlog::info("VR: on_device_reset: in_render");
+
+        // what the fuck
+        if (m_needs_camera_restore) {
+            spdlog::info("VR: on_device_reset: needs_camera_restore");
+            restore_camera();
+        }
+    }
+
+    if (inside_on_end) {
+        spdlog::info("VR: on_device_reset: inside_on_end");
+    }
 }
 
 void VR::on_config_load(const utility::Config& cfg) {
@@ -2542,7 +2826,7 @@ void VR::on_config_load(const utility::Config& cfg) {
 }
 
 void VR::on_config_save(utility::Config& cfg) {
-        for (IModValue& option : m_options) {
+    for (IModValue& option : m_options) {
         option.config_save(cfg);
     }
 }
