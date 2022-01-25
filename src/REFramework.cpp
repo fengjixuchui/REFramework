@@ -25,6 +25,7 @@ extern "C" {
 
 #include "ExceptionHandler.hpp"
 #include "LicenseStrings.hpp"
+#include "mods/REFrameworkConfig.hpp"
 #include "REFramework.hpp"
 
 namespace fs = std::filesystem;
@@ -640,20 +641,20 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
 
 // this is unfortunate.
 void REFramework::on_direct_input_keys(const std::array<uint8_t, 256>& keys) {
-    if (keys[m_menu_key] && m_last_keys[m_menu_key] == 0) {
-        std::lock_guard _{m_input_mutex};
-        m_draw_ui = !m_draw_ui;
+    const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
 
-        // Save the config if we close the UI
-        if (!m_draw_ui && m_game_data_initialized) {
-            save_config();
-        }
+    if (keys[menu_key] && m_last_keys[menu_key] == 0) {
+        std::lock_guard _{m_input_mutex};
+
+        set_draw_ui(!m_draw_ui);
     }
 
     m_last_keys = keys;
 }
 
 void REFramework::save_config() {
+    std::scoped_lock _{m_config_mtx};
+
     spdlog::info("Saving config re2_fw_config.txt");
 
     utility::Config cfg{};
@@ -668,6 +669,21 @@ void REFramework::save_config() {
     }
 
     spdlog::info("Saved config");
+}
+
+void REFramework::set_draw_ui(bool state, bool should_save) {
+    std::scoped_lock _{m_config_mtx};
+
+    bool prev_state = m_draw_ui;
+    m_draw_ui = state;
+
+    if (m_game_data_initialized) {
+        REFrameworkConfig::get()->get_menu_open()->value() = state;
+    }
+
+    if (state != prev_state && should_save && m_game_data_initialized) {
+        save_config();
+    }
 }
 
 void REFramework::consume_input() {
@@ -727,7 +743,7 @@ void REFramework::draw_ui() {
     ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_Once);
     ImGui::Begin("REFramework", &m_draw_ui);
-    ImGui::Text("Menu Key: Insert");
+    ImGui::Text("Default Menu Key: Insert");
     ImGui::Checkbox("Transparency", &m_ui_option_transparent);
     ImGui::SameLine();
     ImGui::Text("(?)");
@@ -746,6 +762,7 @@ void REFramework::draw_ui() {
         m_mods->on_draw_ui();
     } else if (!m_game_data_initialized) {
         ImGui::TextWrapped("REFramework is currently initializing...");
+        ImGui::TextWrapped("This menu will close after initialization if you have the remember option enabled.");
     } else if (!m_error.empty()) {
         ImGui::TextWrapped("REFramework error: %s", m_error.c_str());
     }
@@ -754,6 +771,16 @@ void REFramework::draw_ui() {
     m_last_window_size = ImGui::GetWindowSize();
 
     ImGui::End();
+
+    // save the menu state in config
+    if (m_draw_ui != m_last_draw_ui) {
+        set_draw_ui(m_draw_ui, true);
+    }
+
+    // if we pressed the X button to close the menu.
+    if (m_last_draw_ui && !m_draw_ui) {
+        m_windows_message_hook->window_toggle_cursor(m_cursor_state);
+    }
 }
 
 void REFramework::draw_about() {
@@ -1238,6 +1265,8 @@ bool REFramework::init_d3d12() {
         auto& backbuffer = m_d3d12.get_rt(D3D12::RTV::BACKBUFFER_0);
         auto desc = backbuffer->GetDesc();
 
+        spdlog::info("[D3D12] Back buffer format is {}", desc.Format);
+
         D3D12_HEAP_PROPERTIES props{};
         props.Type = D3D12_HEAP_TYPE_DEFAULT;
         props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -1271,7 +1300,10 @@ bool REFramework::init_d3d12() {
 
     spdlog::info("[D3D12] Initializing ImGui...");
 
-    if (!ImGui_ImplDX12_Init(device, 1, DXGI_FORMAT_R8G8B8A8_UNORM, m_d3d12.srv_desc_heap.Get(),
+    auto& bb = m_d3d12.get_rt(D3D12::RTV::BACKBUFFER_0);
+    auto bb_desc = bb->GetDesc();
+
+    if (!ImGui_ImplDX12_Init(device, 1, bb_desc.Format, m_d3d12.srv_desc_heap.Get(),
             m_d3d12.get_cpu_srv(device, D3D12::SRV::IMGUI_FONT), m_d3d12.get_gpu_srv(device, D3D12::SRV::IMGUI_FONT))) {
         spdlog::error("[D3D12] Failed to initialize ImGui.");
         return false;
