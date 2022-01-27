@@ -28,7 +28,7 @@
 #include "utility/Module.hpp"
 
 #include "FirstPerson.hpp"
-
+#include "ManualFlashlight.hpp"
 #include "VR.hpp"
 
 constexpr std::string_view COULD_NOT_LOAD_OPENVR = "Could not load openvr_api.dll";
@@ -1376,6 +1376,12 @@ void VR::disable_bad_effects() {
     static auto get_colorspace_method = render_config_t->get_method("get_ColorSpace");
     static auto set_colorspace_method = render_config_t->get_method("set_ColorSpace");
 
+    static auto get_hdrmode_method = renderer_t->get_method("get_HDRMode");
+    static auto set_hdrmode_method = renderer_t->get_method("set_HDRMode");
+
+    static auto get_hdr_display_mode_enable_method = renderer_t->get_method("get_HDRDisplayModeEnable");
+    static auto set_hdr_display_mode_enable_method = renderer_t->get_method("set_HDRDisplayModeEnable");
+
     auto renderer = renderer_t->get_instance();
 
     auto render_config = get_render_config_method->call<::REManagedObject*>(context, renderer);
@@ -1473,12 +1479,28 @@ void VR::disable_bad_effects() {
         }
     }
 
+    if (get_hdrmode_method != nullptr && set_hdrmode_method != nullptr) {
+        // static
+        const auto is_hdr_enabled = get_hdrmode_method->call<bool>(context);
+
+        // Disable HDR
+        if (is_hdr_enabled) {
+            set_hdrmode_method->call<void*>(context, false);
+            
+            if (set_hdr_display_mode_enable_method != nullptr) {
+                set_hdr_display_mode_enable_method->call<void*>(context, false);
+            }
+
+            spdlog::info("[VR] HDR disabled");
+        }
+    }
+
     if (get_colorspace_method != nullptr && set_colorspace_method != nullptr) {
         const auto is_hdr_enabled = get_colorspace_method->call<via::render::ColorSpace>(context, render_config) == via::render::ColorSpace::HDR10;
 
         if (is_hdr_enabled) {
             set_colorspace_method->call<void*>(context, render_config, via::render::ColorSpace::HDTV);
-            spdlog::info("[VR] HDR disabled");
+            spdlog::info("[VR] HDR disabled (ColorSpace)");
         }
     }
 
@@ -1845,9 +1867,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 }
 
                 auto& restore_data = g_elements_to_reset.emplace_back(std::make_unique<GUIRestoreData>());
-
-                Vector4f original_game_object_pos{};
-                sdk::call_object_func<Vector3f*>(game_object->transform, "get_Position", &original_game_object_pos, context, game_object->transform);
+                auto original_game_object_pos = sdk::get_transform_position(game_object->transform);
 
                 restore_data->element = gui_element;
                 restore_data->view = view;
@@ -1911,17 +1931,18 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                         auto child = sdk::call_object_func<REManagedObject*>(view, "get_Child", context, view);
 
                         auto fix_2d_position = [&](const Vector4f& target_position) {
-                            auto dir = glm::normalize(target_position - m_render_camera_matrix[3]);
+                            auto delta = target_position - m_render_camera_matrix[3];
+                            delta.w = 0.0f;
+
+                            auto dir = glm::normalize(delta);
                             dir.w = 0.0f;
                             
-                            gui_matrix[3] = camera_position + (dir * m_ui_scale);
-                            gui_matrix[3].w = 1.0f;
-
                             // make matrix from dir
                             const auto look_mat = glm::rowMajor4(glm::lookAtLH(Vector3f{}, Vector3f{ dir }, Vector3f(0.0f, 1.0f, 0.0f)));
-
                             const auto look_rot = glm::quat{look_mat};
-                            const auto new_pos = gui_matrix[3];
+
+                            auto new_pos = target_position;
+                            new_pos.w = 1.0f;
 
                             gui_matrix = look_mat;
                             gui_matrix[3] = new_pos;
@@ -1934,6 +1955,12 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                                 Vector3f half_size{ gui_size.w / 2.0f, gui_size.h / 2.0f, 0.0f };
                                 sdk::call_object_func<void*>(child, "set_Position", context, child, &half_size);
+
+                                const auto scaled_ui_scale = m_ui_scale * 0.01f;
+                                const auto distance = glm::length(delta);
+                                const auto scale = std::clamp<float>(distance * scaled_ui_scale, 0.1f, 100.0f);
+                                Vector4f new_scale{ scale, scale, scale, 1.0f };
+                                sdk::call_object_func<void*>(child, "set_Scale", context, child, &new_scale);
                             }
                         };
 
@@ -2523,9 +2550,21 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_quickturn_down = is_action_active(m_action_re2_quickturn, m_left_joystick) || is_action_active(m_action_re2_quickturn, m_right_joystick);
     const auto is_reset_view_down = is_action_active(m_action_re2_reset_view, m_left_joystick) || is_action_active(m_action_re2_reset_view, m_right_joystick);
     const auto is_change_ammo_down = is_action_active(m_action_re2_change_ammo, m_left_joystick) || is_action_active(m_action_re2_change_ammo, m_right_joystick);
+	const auto is_toggle_flashlight_down = is_action_active(m_action_re2_toggle_flashlight, m_left_joystick);
 
     const auto is_left_system_button_down = is_action_active(m_action_system_button, m_left_joystick);
     const auto is_right_system_button_down = is_action_active(m_action_system_button, m_right_joystick);
+
+    
+    
+#if defined(RE2) || defined(RE3) || defined(RE8)
+    if (is_toggle_flashlight_down && !m_was_flashlight_toggle_down) {            
+        ManualFlashlight::g_manual_flashlight-> toggle_flashlight();
+    }    
+
+    m_was_flashlight_toggle_down = is_toggle_flashlight_down;
+#endif
+
 
 #if defined(RE2) || defined(RE3)
     const auto is_firstperson_toggle_down = is_action_active(m_action_re2_firstperson_toggle, m_left_joystick) || is_action_active(m_action_re2_firstperson_toggle, m_right_joystick);

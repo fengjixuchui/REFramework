@@ -122,13 +122,55 @@ bool D3D12Hook::hook() {
 
     spdlog::info("Creating dummy swapchain");
 
+    // used in CreateSwapChainForHwnd fallback
+    HWND hwnd = 0;
+    WNDCLASSEX wc{};
+
     // we call CreateSwapChainForComposition instead of CreateSwapChainForHwnd
     // because some overlays will have hooks on CreateSwapChainForHwnd
     // and all we're doing is creating a dummy swapchain
     // we don't want to screw up the overlay
     if (FAILED(factory->CreateSwapChainForComposition(command_queue, &swap_chain_desc1, NULL, &swap_chain1))) {
-        spdlog::error("Failed to create D3D12 Dummy DXGI SwapChain");
-        return false;
+        // fallback to CreateSwapChainForHwnd
+        wc.cbSize = sizeof(WNDCLASSEX);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = DefWindowProc;
+        wc.cbClsExtra = 0;
+        wc.cbWndExtra = 0;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.hIcon = NULL;
+        wc.hCursor = NULL;
+        wc.hbrBackground = NULL;
+        wc.lpszMenuName = NULL;
+        wc.lpszClassName = TEXT("REFRAMEWORK_DX12_DUMMY");
+        wc.hIconSm = NULL;
+
+        ::RegisterClassEx(&wc);
+
+        hwnd = ::CreateWindow(wc.lpszClassName, TEXT("REF DX Dummy Window"), WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
+
+        swap_chain_desc1.BufferCount = 3;
+        swap_chain_desc1.Width = 0;
+        swap_chain_desc1.Height = 0;
+        swap_chain_desc1.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        swap_chain_desc1.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        swap_chain_desc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swap_chain_desc1.SampleDesc.Count = 1;
+        swap_chain_desc1.SampleDesc.Quality = 0;
+        swap_chain_desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        swap_chain_desc1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+        swap_chain_desc1.Scaling = DXGI_SCALING_STRETCH;
+        swap_chain_desc1.Stereo = FALSE;
+
+        if (FAILED(factory->CreateSwapChainForHwnd(command_queue, hwnd, &swap_chain_desc1, nullptr, nullptr, &swap_chain1))) {
+            if (FAILED(factory->CreateSwapChainForHwnd(command_queue, GetDesktopWindow(), &swap_chain_desc1, nullptr, nullptr, &swap_chain1))) {
+                ::DestroyWindow(hwnd);
+                ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+
+                spdlog::error("Failed to create D3D12 Dummy Swap Chain");
+                return false;
+            }
+        }
     }
 
     spdlog::info("Querying dummy swapchain");
@@ -138,14 +180,66 @@ bool D3D12Hook::hook() {
         return false;
     }
 
+    spdlog::info("Finding command queue offset");
+
     // Find the command queue offset in the swapchain
     for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
-        auto data = *(ID3D12CommandQueue**)((uintptr_t)swap_chain1 + i);
+        const auto base = (uintptr_t)swap_chain1 + i;
+
+        // reached the end
+        if (IsBadReadPtr((void*)base, sizeof(void*))) {
+            break;
+        }
+
+        auto data = *(ID3D12CommandQueue**)base;
 
         if (data == command_queue) {
             m_command_queue_offset = i;
             spdlog::info("Found command queue offset: {:x}", i);
             break;
+        }
+    }
+
+    // Scan throughout the swapchain for a valid pointer to scan through
+    // this is usually only necessary for Proton
+    if (m_command_queue_offset == 0) {
+        for (auto base = 0; base < 512 * sizeof(void*); base += sizeof(void*)) {
+            const auto pre_scan_base = (uintptr_t)swap_chain1 + base;
+
+            // reached the end
+            if (IsBadReadPtr((void*)pre_scan_base, sizeof(void*))) {
+                break;
+            }
+
+            const auto scan_base = *(uintptr_t*)pre_scan_base;
+
+            if (scan_base == 0 || IsBadReadPtr((void*)scan_base, sizeof(void*))) {
+                continue;
+            }
+
+            for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
+                const auto pre_data = scan_base + i;
+
+                if (IsBadReadPtr((void*)pre_data, sizeof(void*))) {
+                    break;
+                }
+
+                auto data = *(ID3D12CommandQueue**)pre_data;
+
+                if (data == command_queue) {
+                    m_using_proton_swapchain = true;
+                    m_command_queue_offset = i;
+                    m_proton_swapchain_offset = base;
+
+                    spdlog::info("Proton potentially detected");
+                    spdlog::info("Found command queue offset: {:x}", i);
+                    break;
+                }
+            }
+
+            if (m_using_proton_swapchain) {
+                break;
+            }
         }
     }
 
@@ -187,6 +281,14 @@ bool D3D12Hook::hook() {
     swap_chain1->Release();
     swap_chain->Release();
 
+    if (hwnd) {
+        ::DestroyWindow(hwnd);
+    }
+
+    if (wc.lpszClassName != nullptr) {
+        ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+    }
+
     return m_hooked;
 }
 
@@ -219,7 +321,12 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, UINT sync_interva
     swap_chain->GetDevice(IID_PPV_ARGS(&d3d12->m_device));
 
     if (d3d12->m_device != nullptr) {
-        d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->m_command_queue_offset);
+        if (d3d12->m_using_proton_swapchain) {
+            const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->m_proton_swapchain_offset);
+            d3d12->m_command_queue = *(ID3D12CommandQueue**)(real_swapchain + d3d12->m_command_queue_offset);
+        } else {
+            d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->m_command_queue_offset);
+        }
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {
