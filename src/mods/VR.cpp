@@ -125,7 +125,7 @@ Matrix4x4f* VR::camera_get_projection_matrix_hook(REManagedObject* camera, Matri
 
     auto vr = VR::get();
 
-    if (result == nullptr || !g_framework->is_ready() || !vr->m_is_hmd_active) {
+    if (result == nullptr || !g_framework->is_ready() || !vr->m_is_hmd_active || vr->m_disable_projection_matrix_override) {
         return original_func(camera, result);
     }
 
@@ -157,7 +157,7 @@ Matrix4x4f* VR::camera_get_view_matrix_hook(REManagedObject* camera, Matrix4x4f*
 
     auto vr = VR::get();
 
-    if (!vr->m_is_hmd_active) {
+    if (!vr->m_is_hmd_active || vr->m_disable_view_matrix_override) {
         return original_func(camera, result);
     }
 
@@ -462,7 +462,10 @@ void VR::on_lua_state_created(sol::state& lua) {
         "is_hmd_active", &VR::is_hmd_active,
         "is_action_active", &VR::is_action_active,
         "is_using_hmd_oriented_audio", &VR::is_using_hmd_oriented_audio,
-        "toggle_hmd_oriented_audio", &VR::toggle_hmd_oriented_audio
+        "toggle_hmd_oriented_audio", &VR::toggle_hmd_oriented_audio,
+        "apply_hmd_transform", [](VR* vr, glm::quat& rotation, Vector4f& position) {
+            vr->apply_hmd_transform(rotation, position);
+        }
     );
 
     lua["vrmod"] = this;
@@ -1149,18 +1152,18 @@ void VR::update_camera_origin() {
     apply_hmd_transform(camera_joint);
 }
 
-void VR::apply_hmd_transform(::REJoint* camera_joint) {
+void VR::apply_hmd_transform(glm::quat& rotation, Vector4f& position) {
     const auto current_hmd_rotation = glm::normalize(m_rotation_offset * glm::quat{get_rotation(0)});
     
     glm::quat new_rotation{};
     glm::quat camera_rotation{};
     
     if (!m_decoupled_pitch->value()) {
-        camera_rotation = m_original_camera_rotation;
-        new_rotation = glm::normalize(m_original_camera_rotation * current_hmd_rotation);
+        camera_rotation = rotation;
+        new_rotation = glm::normalize(rotation * current_hmd_rotation);
     } else if (m_decoupled_pitch->value()) {
         // facing forward matrix
-        const auto camera_rotation_matrix = utility::math::remove_y_component(Matrix4x4f{m_original_camera_rotation});
+        const auto camera_rotation_matrix = utility::math::remove_y_component(Matrix4x4f{rotation});
         camera_rotation = glm::quat{camera_rotation_matrix};
         new_rotation = glm::normalize(camera_rotation * current_hmd_rotation);
     }
@@ -1170,10 +1173,20 @@ void VR::apply_hmd_transform(::REJoint* camera_joint) {
 
     auto current_head_pos = camera_rotation * current_relative_pos;
 
-    sdk::set_joint_rotation(camera_joint, new_rotation);
+    rotation = new_rotation;
+    position = position + current_head_pos;
+}
+
+void VR::apply_hmd_transform(::REJoint* camera_joint) {
+    auto rotation = m_original_camera_rotation;
+    auto position = m_original_camera_position;
+
+    apply_hmd_transform(rotation, position);
+
+    sdk::set_joint_rotation(camera_joint, rotation);
 
     if (m_positional_tracking) {
-        sdk::set_joint_position(camera_joint, m_original_camera_position + current_head_pos);   
+        sdk::set_joint_position(camera_joint, position);   
     }
 }
 
@@ -1204,7 +1217,16 @@ void VR::update_audio_camera() {
     m_original_audio_camera_rotation = sdk::get_joint_rotation(camera_joint);
     m_needs_audio_restore = true;
 
-    apply_hmd_transform(camera_joint);
+    auto rotation = m_original_audio_camera_rotation;
+    auto position = m_original_audio_camera_position;
+
+    apply_hmd_transform(rotation, position);
+
+    sdk::set_joint_rotation(camera_joint, rotation);
+
+    if (m_positional_tracking) {
+        sdk::set_joint_position(camera_joint, position);   
+    }
 }
 
 void VR::update_render_matrix() {
@@ -1946,8 +1968,12 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                             gui_matrix = look_mat;
                             gui_matrix[3] = new_pos;
-                            sdk::set_transform_position(game_object->transform, new_pos);
-                            sdk::set_transform_rotation(game_object->transform, look_rot);
+
+                            // LESSON: DO NOT CALL THESE METHODS ON THE TRANSFORM!
+                            // THEY CAUSE SOME STRANGE BUGS WHEN THE GUI ELEMENT HAS A PARENT TRANSFORM!
+                            // THE GUI RENDERING FUNCTIONS PERFORM ON THE WORLD MATRIX, SO THIS IS NOT NECESSARY.
+                            //sdk::set_transform_position(game_object->transform, new_pos);
+                            //sdk::set_transform_rotation(game_object->transform, look_rot);
                             
                             if (child != nullptr) {
                                 regenny::via::Size gui_size{};
@@ -2094,7 +2120,10 @@ void VR::on_gui_draw_element(REComponent* gui_element, void* primitive_context) 
         auto game_object = utility::re_component::get_game_object(data->element);
 
         if (game_object != nullptr && game_object->transform != nullptr) {
-            sdk::set_transform_position(game_object->transform, data->original_position);
+            //sdk::set_transform_position(game_object->transform, data->original_position);
+
+            auto& gui_matrix = game_object->transform->worldTransform;
+            gui_matrix[3] = data->original_position;
         }
     }
 
@@ -2550,6 +2579,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_quickturn_down = is_action_active(m_action_re2_quickturn, m_left_joystick) || is_action_active(m_action_re2_quickturn, m_right_joystick);
     const auto is_reset_view_down = is_action_active(m_action_re2_reset_view, m_left_joystick) || is_action_active(m_action_re2_reset_view, m_right_joystick);
     const auto is_change_ammo_down = is_action_active(m_action_re2_change_ammo, m_left_joystick) || is_action_active(m_action_re2_change_ammo, m_right_joystick);
+    const auto is_minimap_down = is_action_active(m_action_minimap, m_left_joystick) || is_action_active(m_action_minimap, m_right_joystick);
 	const auto is_toggle_flashlight_down = is_action_active(m_action_re2_toggle_flashlight, m_left_joystick);
 
     const auto is_left_system_button_down = is_action_active(m_action_system_button, m_left_joystick);
@@ -2735,6 +2765,9 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
 
     // Change Ammo
     set_button_state(app::ropeway::InputDefine::Kind::CHANGE_BULLET, is_change_ammo_down);
+
+    // MiniMap
+    set_button_state(app::ropeway::InputDefine::Kind::MINIMAP, is_minimap_down);
 
     // Left or Right System Button: Pause
     set_button_state(app::ropeway::InputDefine::Kind::PAUSE, is_left_system_button_down || is_right_system_button_down || m_handle_pause);
@@ -2929,6 +2962,9 @@ void VR::on_draw_ui() {
 
     ImGui::Separator();
     ImGui::Text("Debug info");
+    ImGui::Checkbox("Disable Projection Matrix Override", &m_disable_projection_matrix_override);
+    ImGui::Checkbox("Disable View Matrix Override", &m_disable_view_matrix_override);
+
     ImGui::DragFloat4("Raw Left", (float*)&m_raw_projections[0], 0.01f, -100.0f, 100.0f);
     ImGui::DragFloat4("Raw Right", (float*)&m_raw_projections[1], 0.01f, -100.0f, 100.0f);
 

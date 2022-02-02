@@ -218,6 +218,7 @@ private:
     void update_action_states();
     void update_camera(); // if not in firstperson mode
     void update_camera_origin(); // every frame
+    void apply_hmd_transform(glm::quat& rotation, Vector4f& position);
     void apply_hmd_transform(::REJoint* camera_joint);
     void update_audio_camera();
     void update_render_matrix();
@@ -294,9 +295,11 @@ private:
     vr::VRActionHandle_t m_action_re2_reset_view{};
     vr::VRActionHandle_t m_action_re2_change_ammo{};
     vr::VRActionHandle_t m_action_re2_toggle_flashlight{};
+    vr::VRActionHandle_t m_action_minimap{};
 
     bool m_was_firstperson_toggle_down{false};
     bool m_was_flashlight_toggle_down{false};
+    
     
     std::unordered_map<std::string, std::reference_wrapper<vr::VRActionHandle_t>> m_action_handles {
         { "/actions/default/in/Trigger", m_action_trigger },
@@ -316,7 +319,8 @@ private:
         { "/actions/default/in/RE2_FirstPerson_Toggle", m_action_re2_firstperson_toggle },
         { "/actions/default/in/RE2_Reset_View", m_action_re2_reset_view },
         { "/actions/default/in/RE2_Change_Ammo", m_action_re2_change_ammo },
-        { "/actions/default/in/RE2_Toggle_Flashlight", m_action_re2_toggle_flashlight }
+        { "/actions/default/in/RE2_Toggle_Flashlight", m_action_re2_toggle_flashlight },
+        { "/actions/default/in/MiniMap", m_action_minimap }
     };
 
     // Input sources
@@ -423,6 +427,9 @@ private:
     const ModToggle::Ptr m_force_lensdistortion_settings{ ModToggle::create(generate_name("ForceLensDistortion"), true) };
     const ModToggle::Ptr m_force_volumetrics_settings{ ModToggle::create(generate_name("ForceVolumetrics"), true) };
     const ModToggle::Ptr m_force_lensflares_settings{ ModToggle::create(generate_name("ForceLensFlares"), true) };
+
+    bool m_disable_projection_matrix_override{ false };
+    bool m_disable_view_matrix_override{false};
 
     ValueList m_options{
         *m_set_standing_key,

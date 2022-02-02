@@ -2,6 +2,7 @@
 
 #include "../ScriptRunner.hpp"
 #include "../../sdk/SceneManager.hpp"
+#include "REFramework.hpp"
 
 #include "ImGui.hpp"
 
@@ -352,6 +353,297 @@ void new_line() {
 bool collapsing_header(const char* name) {
     return ImGui::CollapsingHeader(name);
 }
+
+int load_font(sol::object filepath_obj, int size, sol::object ranges) {
+    namespace fs = std::filesystem;
+    const char* filepath = "doesnt-exist.not-a-real-font";
+
+    if (filepath_obj.is<const char*>()) {
+        filepath = filepath_obj.as<const char*>();
+    }
+
+    std::string modpath{};
+
+    modpath.resize(1024, 0);
+    modpath.resize(GetModuleFileName(nullptr, modpath.data(), modpath.size()));
+
+    auto fonts_path = fs::path{modpath}.parent_path() / "reframework" / "fonts";
+    auto font_path = fonts_path / filepath;
+
+    fs::create_directories(fonts_path);
+    std::vector<ImWchar> ranges_vec{};
+
+    if (ranges.is<sol::table>()) {
+        sol::table ranges_table = ranges;
+
+        for (auto i = 1u; i <= ranges_table.size(); ++i) {
+            ranges_vec.push_back(ranges_table[i].get<ImWchar>());
+        }
+    }
+
+    return g_framework->add_font(font_path, size, ranges_vec);
+}
+
+void push_font(int font) {
+    ImGui::PushFont(g_framework->get_font(font));
+}
+
+void pop_font() {
+    ImGui::PopFont();
+}
+
+int get_default_font_size() {
+    return g_framework->get_font_size();
+}
+
+sol::variadic_results color_picker(sol::this_state s, const char* label, unsigned int color, sol::object flags_obj) {
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto r = color & 0xFF;
+    auto g = (color >> 8) & 0xFF;
+    auto b = (color >> 16) & 0xFF;
+    auto a = (color >> 24) & 0xFF;
+
+    float col[4]{
+        r / 255.0f,
+        g / 255.0f,
+        b / 255.0f,
+        a / 255.0f,
+    };
+
+    auto changed = ImGui::ColorPicker4(label, col, flags);
+
+    r = (unsigned int)(col[0] * 255.0f);
+    g = (unsigned int)(col[1] * 255.0f);
+    b = (unsigned int)(col[2] * 255.0f);
+    a = (unsigned int)(col[3] * 255.0f);
+
+    unsigned int new_color = 0;
+
+    new_color |= r;
+    new_color |= g << 8;
+    new_color |= b << 16;
+    new_color |= a << 24;
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, new_color));
+
+    return results;
+}
+
+sol::variadic_results color_picker_argb(sol::this_state s, const char* label, unsigned int color, sol::object flags_obj) {
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto r = (color >> 16) & 0xFF;
+    auto g = (color >> 8) & 0xFF;
+    auto b = color & 0xFF;
+    auto a = (color >> 24) & 0xFF;
+
+    float col[4]{
+        r / 255.0f,
+        g / 255.0f,
+        b / 255.0f,
+        a / 255.0f,
+    };
+
+    auto changed = ImGui::ColorPicker4(label, col, flags);
+
+    r = (unsigned int)(col[0] * 255.0f);
+    g = (unsigned int)(col[1] * 255.0f);
+    b = (unsigned int)(col[2] * 255.0f);
+    a = (unsigned int)(col[3] * 255.0f);
+
+    unsigned int new_color = 0;
+
+    new_color |= r << 16;
+    new_color |= g << 8;
+    new_color |= b;
+    new_color |= a << 24;
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, new_color));
+
+    return results;
+}
+
+sol::variadic_results color_picker3(sol::this_state s, const char* label, Vector3f color, sol::object flags_obj) {
+    if (label == nullptr) {
+        label = "";
+    }
+
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto changed = ImGui::ColorPicker3(label, &color.x, flags);
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, color));
+
+    return results;
+}
+
+sol::variadic_results color_picker4(sol::this_state s, const char* label, Vector4f color, sol::object flags_obj) {
+    if (label == nullptr) {
+        label = "";
+    }
+
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto changed = ImGui::ColorPicker4(label, &color.x, flags);
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, color));
+
+    return results;
+}
+
+sol::variadic_results color_edit(sol::this_state s, const char* label, unsigned int color, sol::object flags_obj) {
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+   
+    auto r = color & 0xFF;
+    auto g = (color >> 8) & 0xFF;
+    auto b = (color >> 16) & 0xFF;
+    auto a = (color >> 24) & 0xFF;
+
+    float col[4]{
+        r / 255.0f,
+        g / 255.0f,
+        b / 255.0f,
+        a / 255.0f,
+    };
+
+    auto changed = ImGui::ColorEdit4(label, col, flags);
+
+    r = (unsigned int)(col[0] * 255.0f);
+    g = (unsigned int)(col[1] * 255.0f);
+    b = (unsigned int)(col[2] * 255.0f);
+    a = (unsigned int)(col[3] * 255.0f);
+
+    unsigned int new_color = 0;
+
+    new_color |= r;
+    new_color |= g << 8;
+    new_color |= b << 16;
+    new_color |= a << 24;
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, new_color));
+
+    return results;
+}
+
+sol::variadic_results color_edit_argb(sol::this_state s, const char* label, unsigned int color, sol::object flags_obj) {
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto r = (color >> 16) & 0xFF;
+    auto g = (color >> 8) & 0xFF;
+    auto b = color & 0xFF;
+    auto a = (color >> 24) & 0xFF;
+
+    float col[4]{
+        r / 255.0f,
+        g / 255.0f,
+        b / 255.0f,
+        a / 255.0f,
+    };
+
+    auto changed = ImGui::ColorEdit4(label, col, flags);
+
+    r = (unsigned int)(col[0] * 255.0f);
+    g = (unsigned int)(col[1] * 255.0f);
+    b = (unsigned int)(col[2] * 255.0f);
+    a = (unsigned int)(col[3] * 255.0f);
+
+    unsigned int new_color = 0;
+
+    new_color |= r << 16;
+    new_color |= g << 8;
+    new_color |= b;
+    new_color |= a << 24;
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, new_color));
+
+    return results;
+}
+
+sol::variadic_results color_edit3(sol::this_state s, const char* label, Vector3f color, sol::object flags_obj) {
+    if (label == nullptr) {
+        label = "";
+    }
+
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto changed = ImGui::ColorEdit3(label, &color.x, flags);
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, color));
+
+    return results;
+}
+
+sol::variadic_results color_edit4(sol::this_state s, const char* label, Vector4f color, sol::object flags_obj) {
+    if (label == nullptr) {
+        label = "";
+    }
+
+    ImGuiColorEditFlags flags{};
+
+    if (flags_obj.is<int>()) {
+        flags = (ImGuiColorEditFlags)flags_obj.as<int>();
+    }
+
+    auto changed = ImGui::ColorEdit4(label, &color.x, flags);
+
+    sol::variadic_results results{};
+
+    results.push_back(sol::make_object(s, changed));
+    results.push_back(sol::make_object(s, color));
+
+    return results;
+}
 } // namespace api::imgui
 
 namespace api::draw {
@@ -502,6 +794,18 @@ void bindings::open_imgui(ScriptState* s) {
     imgui["spacing"] = api::imgui::spacing;
     imgui["new_line"] = api::imgui::new_line;
     imgui["collapsing_header"] = api::imgui::collapsing_header;
+    imgui["load_font"] = api::imgui::load_font;
+    imgui["push_font"] = api::imgui::push_font;
+    imgui["pop_font"] = api::imgui::pop_font;
+    imgui["get_default_font_size"] = api::imgui::get_default_font_size;
+    imgui["color_picker"] = api::imgui::color_picker;
+    imgui["color_picker_argb"] = api::imgui::color_picker_argb;
+    imgui["color_picker3"] = api::imgui::color_picker3;
+    imgui["color_picker4"] = api::imgui::color_picker4;
+    imgui["color_edit"] = api::imgui::color_edit;
+    imgui["color_edit_argb"] = api::imgui::color_edit_argb;
+    imgui["color_edit3"] = api::imgui::color_edit3;
+    imgui["color_edit4"] = api::imgui::color_edit4;
     lua["imgui"] = imgui;
 
     auto draw = lua.create_table();
