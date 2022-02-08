@@ -34,7 +34,7 @@ public:
     void on_lua_state_created(sol::state& lua) override;
 
     void on_pre_imgui_frame() override;
-    void on_frame() override;
+    void on_present() override;
     void on_post_present() override;
     void on_update_transform(RETransform* transform) override;
     void on_update_camera_controller(RopewayPlayerCameraController* controller) override;
@@ -98,6 +98,10 @@ public:
     glm::quat get_rotation_offset();
     void set_rotation_offset(const glm::quat& offset);
     void recenter_view();
+
+    glm::quat get_gui_rotation_offset();
+    void set_gui_rotation_offset(const glm::quat& offset);
+    void recenter_gui(const glm::quat& from);
 
     Vector4f get_current_offset();
 
@@ -240,6 +244,7 @@ private:
     std::recursive_mutex m_openvr_mtx{};
     std::recursive_mutex m_wwise_mtx{};
     std::shared_mutex m_pose_mtx{};
+    std::shared_mutex m_gui_mtx{};
     std::shared_mutex m_eyes_mtx{};
     std::shared_mutex m_rotation_mtx{};
 
@@ -265,6 +270,7 @@ private:
 
     Vector4f m_standing_origin{ 0.0f, 1.5f, 0.0f, 0.0f };
     glm::quat m_rotation_offset{ glm::identity<glm::quat>() };
+    glm::quat m_gui_rotation_offset{ glm::identity<glm::quat>() };
 
     std::vector<int32_t> m_controllers{};
     std::unordered_set<int32_t> m_controllers_set{};

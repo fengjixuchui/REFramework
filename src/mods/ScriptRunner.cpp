@@ -48,7 +48,17 @@ ScriptState::ScriptState() {
     std::scoped_lock _{ m_execution_mutex };
 
     m_lua.registry()["state"] = this;
-    m_lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table, sol::lib::bit32, sol::lib::utf8);
+    m_lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table, sol::lib::bit32, sol::lib::utf8, sol::lib::os);
+    
+    // Restrict os library
+    auto os = m_lua["os"];
+    os["remove"] = sol::nil;
+    os["rename"] = sol::nil;
+    os["execute"] = sol::nil;
+    os["exit"] = sol::nil;
+    os["setlocale"] = sol::nil;
+    os["getenv"] = sol::nil;
+
     bindings::open_sdk(this);
     bindings::open_imgui(this);
     bindings::open_json(this);
@@ -104,6 +114,9 @@ ScriptState::ScriptState() {
         "length", [](Vector3f& v) { return glm::length(v); },
         "normalize", [](Vector3f& v) { v = glm::normalize(v); },
         "normalized", [](Vector3f& v) { return glm::normalize(v); },
+        "reflect", [](Vector3f& v, Vector3f& normal) { return glm::reflect(v, normal); },
+        "refract", [](Vector3f& v, Vector3f& normal, float eta) { return glm::refract(v, normal, eta); },
+        "lerp", [](Vector3f& v1, Vector3f& v2, float t) { return glm::lerp(v1, v2, t); },
         sol::meta_function::addition, [](Vector3f& lhs, Vector3f& rhs) { return lhs + rhs; },
         sol::meta_function::subtraction, [](Vector3f& lhs, Vector3f& rhs) { return lhs - rhs; },
         sol::meta_function::multiplication, [](Vector3f& lhs, float scalar) { return lhs * scalar; },
@@ -128,6 +141,9 @@ ScriptState::ScriptState() {
         "length", [](Vector4f& v) { return glm::length(v); },
         "normalize", [](Vector4f& v) { v = glm::normalize(v); },
         "normalized", [](Vector4f& v) { return glm::normalize(v); },
+        "reflect", [](Vector4f& v, Vector4f& normal) { return glm::reflect(v, normal); },
+        "refract", [](Vector4f& v, Vector4f& normal, float eta) { return glm::refract(v, normal, eta); },
+        "lerp", [](Vector4f& v1, Vector4f& v2, float t) { return glm::lerp(v1, v2, t); },
         sol::meta_function::addition, [](Vector4f& lhs, Vector4f& rhs) { return lhs + rhs; },
         sol::meta_function::subtraction, [](Vector4f& lhs, Vector4f& rhs) { return lhs - rhs; },
         sol::meta_function::multiplication, [](Vector4f& lhs, float scalar) { return lhs * scalar; },
@@ -151,9 +167,12 @@ ScriptState::ScriptState() {
                     float, float, float, float,
                     float, float, float, float)
         >(),
+        "identity", []() { return glm::identity<Matrix4x4f>(); },
         "to_quat", [] (Matrix4x4f& m) { return glm::quat(m); },
         "inverse", [] (Matrix4x4f& m) { return glm::inverse(m); },
         "invert", [] (Matrix4x4f& m) { m = glm::inverse(m); },
+        "interpolate", [](Matrix4x4f& m1, Matrix4x4f& m2, float t) { return glm::interpolate(m1, m2, t); },
+        "matrix_rotation", [](Matrix4x4f& m) { return glm::extractMatrixRotation(m); },
         sol::meta_function::multiplication, sol::overload(
             [](Matrix4x4f& lhs, Matrix4x4f& rhs) {
                 return lhs * rhs;
@@ -174,6 +193,7 @@ ScriptState::ScriptState() {
     // add glm::quat usertype
     m_lua.new_usertype<glm::quat>("Quaternion",
         sol::meta_function::construct, sol::constructors<glm::quat(), glm::quat(float, float, float, float), glm::quat(const Vector3f&)>(),
+        "identity", []() { return glm::identity<glm::quat>(); },
         "x", &glm::quat::x,
         "y", &glm::quat::y,
         "z", &glm::quat::z,
@@ -183,6 +203,10 @@ ScriptState::ScriptState() {
         "invert", [](glm::quat& q) { q = glm::inverse(q); },
         "normalize", [](glm::quat& q) { q = glm::normalize(q); },
         "normalized", [](glm::quat& q) { return glm::normalize(q); },
+        "slerp", [](glm::quat& q1, glm::quat& q2, float t) { return glm::slerp(q1, q2, t); },
+        "dot", [](glm::quat& q1, glm::quat& q2) { return glm::dot(q1, q2); },
+        "length", [](glm::quat& q) { return glm::length(q); },
+        "conjugate", [](glm::quat& q) { return glm::conjugate(q); },
         sol::meta_function::multiplication, sol::overload( 
             [](glm::quat& lhs, glm::quat& rhs) -> glm::quat {
                 return lhs * rhs;
@@ -243,7 +267,13 @@ void ScriptState::run_script(const std::string& p) {
         auto path = std::filesystem::path(p);
         auto dir = path.parent_path();
 
-        m_lua["package"]["path"] = old_path + ";" + dir.string() + "/?.lua";
+        std::string package_path = m_lua["package"]["path"];
+
+        package_path = old_path + ";" + dir.string() + "/?.lua";
+        package_path = package_path + ";" + dir.string() + "/?/init.lua";
+        package_path = package_path + ";" + dir.string() + "/?.dll";
+
+        m_lua["package"]["path"] = package_path;
         m_lua.safe_script_file(p);
     } catch (const std::exception& e) {
         OutputDebugString(e.what());
