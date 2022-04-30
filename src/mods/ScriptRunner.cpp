@@ -3,10 +3,10 @@
 
 #include <imgui.h>
 
-#include "../sdk/REContext.hpp"
-#include "../sdk/REManagedObject.hpp"
-#include "../sdk/RETypeDB.hpp"
-#include "../sdk/SceneManager.hpp"
+#include "sdk/REContext.hpp"
+#include "sdk/REManagedObject.hpp"
+#include "sdk/RETypeDB.hpp"
+#include "sdk/SceneManager.hpp"
 
 #include "utility/String.hpp"
 
@@ -91,6 +91,7 @@ ScriptState::ScriptState() {
     // add vec2 usertype
     m_lua.new_usertype<Vector2f>("Vector2f",
         sol::meta_function::construct, sol::constructors<Vector4f(float, float)>(),
+        "clone", [](Vector2f& v) -> Vector2f { return v; },
         "x", &Vector2f::x, 
         "y", &Vector2f::y, 
         "dot", [](Vector2f& v1, Vector2f& v2) { return glm::dot(v1, v2); },
@@ -106,6 +107,7 @@ ScriptState::ScriptState() {
     // add vec3 usertype
     m_lua.new_usertype<Vector3f>("Vector3f",
         sol::meta_function::construct, sol::constructors<Vector4f(float, float, float)>(),
+        "clone", [](Vector3f& v) -> Vector3f { return v; },
         "x", &Vector3f::x,
         "y", &Vector3f::y,
         "z", &Vector3f::z,
@@ -132,6 +134,7 @@ ScriptState::ScriptState() {
     // add vec4 usertype
     m_lua.new_usertype<Vector4f>("Vector4f",
         sol::meta_function::construct, sol::constructors<Vector4f(float, float, float, float)>(),
+        "clone", [](Vector4f& v) -> Vector4f { return v; },
         "x", &Vector4f::x,
         "y", &Vector4f::y,
         "z", &Vector4f::z,
@@ -167,6 +170,7 @@ ScriptState::ScriptState() {
                     float, float, float, float,
                     float, float, float, float)
         >(),
+        "clone", [](Matrix4x4f& m) -> Matrix4x4f { return m; },
         "identity", []() { return glm::identity<Matrix4x4f>(); },
         "to_quat", [] (Matrix4x4f& m) { return glm::quat(m); },
         "inverse", [] (Matrix4x4f& m) { return glm::inverse(m); },
@@ -193,6 +197,7 @@ ScriptState::ScriptState() {
     // add glm::quat usertype
     m_lua.new_usertype<glm::quat>("Quaternion",
         sol::meta_function::construct, sol::constructors<glm::quat(), glm::quat(float, float, float, float), glm::quat(const Vector3f&)>(),
+        "clone", [](glm::quat& q) -> glm::quat { return q; },
         "identity", []() { return glm::identity<glm::quat>(); },
         "x", &glm::quat::x,
         "y", &glm::quat::y,
@@ -253,7 +258,11 @@ ScriptState::ScriptState() {
 
 ScriptState::~ScriptState() {
     std::scoped_lock _{m_execution_mutex};
-    m_hooked_fns.clear();
+    for (auto&& [fn, hook_ids] : m_hooks) {
+        for (auto&& id : hook_ids) {
+            g_hookman.remove(fn, id);
+        }
+    }
 }
 
 void ScriptState::run_script(const std::string& p) {
@@ -436,70 +445,88 @@ void ScriptState::on_config_save() try {
     for (auto& fn : m_on_config_save_fns) {
         handle_protected_result(fn());
     }
-} catch (const std::exception& e) {
+}
+catch (const std::exception& e) {
     OutputDebugString(e.what());
 }
 
-
-
-ScriptState::PreHookResult ScriptState::on_pre_hook(HookedFn* fn) {
-    std::scoped_lock _{ m_execution_mutex };
-    auto result = PreHookResult::CALL_ORIGINAL;
-
-    try {
-        if (fn->script_pre_fns.empty()) {
-            return result;
-        }
-
-        // Call the script function.
-        // Convert the args to a table that we pass to the script function.
-        for (auto i = 0u; i < fn->args.size(); ++i) {
-            fn->script_args[i + 1] = (void*)fn->args[i];
-        }
-
-        bool any_skip = false;
-
-        for (auto&& pre_fn : fn->script_pre_fns) {
-            auto script_result = handle_protected_result(pre_fn(fn->script_args)).get<sol::object>();
-
-            if (script_result.is<PreHookResult>()) {
-                result = script_result.as<PreHookResult>();
-
-                if (result == PreHookResult::SKIP_ORIGINAL) {
-                    any_skip = true;
-                }
-            }
-        }
-
-        if (any_skip) {
-            result = PreHookResult::SKIP_ORIGINAL;
-        }
-
-        // Apply the changes to arguments that the script function may have made.
-        for (auto i = 0u; i < fn->args.size(); ++i) {
-            auto arg = fn->script_args[i + 1];
-            fn->args[i] = (uintptr_t)arg.get<void*>();
-        }
-    } catch (const std::exception& e) {
-        OutputDebugString(e.what());
-    }
-
-    return result;
+void ScriptState::add_hook(
+    sdk::REMethodDefinition* fn, sol::protected_function pre_cb, sol::protected_function post_cb, sol::object ignore_jmp_obj) {
+    m_hooks_to_add.emplace_back(fn, pre_cb, post_cb, ignore_jmp_obj);
 }
 
-void ScriptState::on_post_hook(HookedFn* fn) {
-    std::scoped_lock _{ m_execution_mutex };
+void ScriptState::install_hooks() {
+    for (; !m_hooks_to_add.empty(); m_hooks_to_add.pop_front()) {
+        auto hookdef = m_hooks_to_add.front();
+        auto fn = hookdef.fn;
+        auto pre_cb = hookdef.pre_cb;
+        auto post_cb = hookdef.post_cb;
+        auto ignore_jmp_object = hookdef.ignore_jmp_obj;
+        auto id = g_hookman.add(
+            fn,
+            [pre_cb, state = this](auto& args, auto& arg_tys) -> HookManager::PreHookResult {
+                using PreHookResult = HookManager::PreHookResult;
 
-    try {
-        if (fn->script_post_fns.empty()) {
-            return;
-        }
+                auto _ = state->scoped_lock();
+                auto result = PreHookResult::CALL_ORIGINAL;
 
-        for (auto&& post_fn : fn->script_post_fns) {
-            fn->ret_val = (uintptr_t)handle_protected_result(post_fn((void*)fn->ret_val)).get<void*>();
-        }
-    } catch (const std::exception& e) {
-        OutputDebugString(e.what());
+                try {
+                    if (pre_cb.is<sol::nil_t>()) {
+                        return result;
+                    }
+
+                    auto script_args = state->lua().create_table();
+
+                    // Call the script function.
+                    // Convert the args to a table that we pass to the script function.
+                    for (auto i = 0u; i < args.size(); ++i) {
+                        script_args[i + 1] = (void*)args[i];
+                    }
+
+                    auto script_result = pre_cb(script_args);
+
+                    if (!script_result.valid()) {
+                        sol::script_default_on_error(state->lua(), std::move(script_result));
+                    }
+
+                    auto script_result_obj = script_result.get<sol::object>();
+
+                    if (script_result_obj.is<PreHookResult>()) {
+                        result = script_result_obj.as<PreHookResult>();
+                    }
+
+                    // Apply the changes to arguments that the script function may have made.
+                    for (auto i = 0u; i < args.size(); ++i) {
+                        auto arg = script_args[i + 1];
+                        args[i] = (uintptr_t)arg.get<void*>();
+                    }
+                } catch (const std::exception& e) {
+                    OutputDebugString(e.what());
+                }
+
+                return result;
+            },
+            [post_cb, state = this](auto& ret_val, auto* ret_ty) {
+                auto _ = state->scoped_lock();
+
+                try {
+                    if (post_cb.is<sol::nil_t>()) {
+                        return;
+                    }
+
+                    auto script_result = post_cb((void*)ret_val);
+
+                    if (!script_result.valid()) {
+                        sol::script_default_on_error(state->lua(), std::move(script_result));
+                    }
+
+                    ret_val = (uintptr_t)script_result.get<void*>();
+                } catch (const std::exception& e) {
+                    OutputDebugString(e.what());
+                }
+            },
+            ignore_jmp_object.is<bool>() ? ignore_jmp_object.as<bool>() : false);
+        m_hooks[fn].emplace_back(id);
     }
 }
 
@@ -518,6 +545,10 @@ std::optional<std::string> ScriptRunner::on_initialize() {
 void ScriptRunner::on_frame() {
     std::scoped_lock _{m_access_mutex};
     m_state->on_frame();
+
+    // install_hooks gets called here because it ensures hooks get installed the next frame after they've been 
+    // enqueued. This prevents a race that can occur if hooks were installed immediately during script loading.
+    m_state->install_hooks();
 }
 
 void ScriptRunner::on_draw_ui() {
@@ -538,11 +569,22 @@ void ScriptRunner::on_draw_ui() {
             if (GetOpenFileName(&ofn) != FALSE) {
                 std::scoped_lock _{ m_access_mutex };
                 m_state->run_script(file);
+                m_loaded_scripts.emplace_back(std::filesystem::path{file}.filename().string());
             }
         }
 
         if (ImGui::Button("Reset scripts")) {
             reset_scripts();
+        }
+
+        if (!m_loaded_scripts.empty()) {
+            ImGui::Text("Loaded scripts:");
+
+            for (auto&& name : m_loaded_scripts) {
+                ImGui::Text(name.c_str());
+            }
+        } else {
+            ImGui::Text("No scripts loaded.");
         }
     }
 
@@ -612,6 +654,7 @@ void ScriptRunner::reset_scripts() {
     // the FirstPerson mod would attempt to hook an already hooked function
     m_state.reset();
     m_state = std::make_unique<ScriptState>();
+    m_loaded_scripts.clear();
 
     std::string module_path{};
 
@@ -619,25 +662,8 @@ void ScriptRunner::reset_scripts() {
     module_path.resize(GetModuleFileName(nullptr, module_path.data(), module_path.size()));
     spdlog::info("[ScriptRunner] Module path {}", module_path);
 
-    // Load from the top-level autorun directory. This is no longer the preferred directory for autorun scripts.
-    auto autorun_path = std::filesystem::path{module_path}.parent_path() / "autorun";
-
-    spdlog::info("[ScriptRunner] Loading scripts...");
-
-    if (std::filesystem::exists(autorun_path)) {
-        for (auto&& entry : std::filesystem::directory_iterator{autorun_path}) {
-            auto&& path = entry.path();
-
-            if (path.has_extension() && path.extension() == ".lua") {
-                m_state->run_script(path.string());
-            }
-        }
-    } else {
-        spdlog::info("[ScriptRunner] Old autorun directory not found, continuing...");
-    }
-
-    // Load from the reframework/autorun directory. This is the preferred directory for autorun scripts.
-    autorun_path = std::filesystem::path{module_path}.parent_path() / "reframework" / "autorun";
+    // Load from the reframework/autorun directory.
+    auto autorun_path = std::filesystem::path{module_path}.parent_path() / "reframework" / "autorun";
 
     spdlog::info("[ScriptRunner] Creating directories {}", autorun_path.string());
     std::filesystem::create_directories(autorun_path);
@@ -648,6 +674,7 @@ void ScriptRunner::reset_scripts() {
 
         if (path.has_extension() && path.extension() == ".lua") {
             m_state->run_script(path.string());
+            m_loaded_scripts.emplace_back(path.filename().string());
         }
     }
 }

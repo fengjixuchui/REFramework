@@ -3,12 +3,13 @@
 
 #include <hde64.h>
 
-#include "../../sdk/REContext.hpp"
-#include "../../sdk/REManagedObject.hpp"
-#include "../../sdk/RETypeDB.hpp"
-#include "../../sdk/SceneManager.hpp"
-#include "../../sdk/ResourceManager.hpp"
-#include "../../utility/Memory.hpp"
+#include "HookManager.hpp"
+#include "sdk/REContext.hpp"
+#include "sdk/REManagedObject.hpp"
+#include "sdk/RETypeDB.hpp"
+#include "sdk/SceneManager.hpp"
+#include "sdk/ResourceManager.hpp"
+#include "utility/Memory.hpp"
 
 #include "../ScriptRunner.hpp"
 #include <lstate.h> // weird include order because of sol
@@ -101,6 +102,69 @@ void add_ref(lua_State* l, ::REManagedObject* obj, bool force = false) {
     detail::add_ref(s.lua_state(), obj, true);
 
     return obj;
+}
+
+::REManagedObject* add_ref_permanent(sol::this_state s, ::REManagedObject* obj) {
+    if (!utility::re_managed_object::is_managed_object(obj)) {
+        throw sol::error{(std::stringstream{} << "add_ref_permanent: " << (uintptr_t)obj << " is not a managed object").str()};
+    }
+
+    utility::re_managed_object::add_ref(obj);
+
+    return obj;
+}
+
+void release(sol::this_state s, ::REManagedObject* obj, bool force = false) {
+    auto l = s.lua_state();
+    auto sv = sol::state_view(l);
+
+    sol::lua_table objects = sv["_sol_lua_push_objects"];
+    sol::lua_table ref_counts = sv["_sol_lua_push_ref_counts"];
+    sol::lua_table ephemeral_counts = sv["_sol_lua_push_ephemeral_counts"];
+
+    if (std::optional<int> ref_count = ref_counts[(uintptr_t)obj]; ref_count && *ref_count > 0) {
+        // because of our internal refcount keeping, we shouldn't need to double check
+        // whether it's an actual object or not. hopefully?
+        //if (utility::re_managed_object::is_managed_object(obj)) {
+            utility::re_managed_object::release(obj);
+        //}
+
+        int new_ref_count = *ref_count - 1;
+
+        if (new_ref_count == 0) {
+            if (sol::object object = ephemeral_counts[(uintptr_t)obj]; !object.valid()) {
+                objects[(uintptr_t)obj] = sol::make_object(l, sol::nil);
+            }
+
+            ref_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
+        } else {
+            ref_counts[(uintptr_t)obj] = new_ref_count;
+        }
+
+        //ephemeral_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
+    } else if (std::optional<int> ephemeral_count = ephemeral_counts[(uintptr_t)obj]; ephemeral_count && *ephemeral_count > 0) {
+        if (force && utility::re_managed_object::is_managed_object(obj)) {
+            utility::re_managed_object::release(obj);
+        }
+
+        // ephemeral counts don't actually release the object, they just decrement the count.
+        int new_ephemeral_count = *ephemeral_count - 1;
+
+        if (new_ephemeral_count == 0) {
+            objects[(uintptr_t)obj] = sol::make_object(l, sol::nil);
+            ephemeral_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
+        } else {
+            ephemeral_counts[(uintptr_t)obj] = new_ephemeral_count;
+        }
+    } else {
+        if (force) {
+            if (utility::re_managed_object::is_managed_object(obj)) {
+                utility::re_managed_object::release(obj);
+            }
+        } else {
+            spdlog::warn("REManagedObject:release attempted to release an object that was not managed by our Lua state");
+        }
+    }
 }
 }
 
@@ -240,7 +304,7 @@ void* get_thread_context() {
 }
 
 auto find_type_definition(const char* name) {
-    return ::sdk::RETypeDB::get()->find_type(name);
+    return ::sdk::find_type_definition(name);
 }
 
 sol::object typeof(sol::this_state s, const char* name) {
@@ -257,12 +321,32 @@ void* get_native_singleton(const char* name) {
     return (void*)::sdk::get_native_singleton<void>(name);
 }
 
-auto get_managed_singleton(const char* name) {
-    return g_framework->get_globals()->get(name);
+auto get_managed_singleton(sol::this_state s, const char* name) {
+    if (name == nullptr) {
+        return sol::make_object(s, sol::nil);
+    }
+
+    auto out = ::sdk::get_managed_singleton<::REManagedObject>(name);
+
+    if (out == nullptr) {
+        return sol::make_object(s, sol::nil);
+    }
+
+    return sol::make_object(s, out);
 }
 
-void* create_managed_string(const char* text) {
-    return ::sdk::VM::create_managed_string(utility::widen(text));
+sol::object create_managed_string(sol::this_state s, const char* text) {
+    if (text == nullptr) {
+        return sol::make_object(s, sol::nil);
+    }
+
+    auto new_str = ::sdk::VM::create_managed_string(utility::widen(text));
+
+    if (new_str == nullptr) {
+        return sol::make_object(s, sol::nil);
+    }
+
+    return sol::make_object(s, (::REManagedObject*)new_str);
 }
 
 sol::object create_managed_array(sol::this_state s, sol::object t_obj, uint32_t length) {
@@ -273,7 +357,7 @@ sol::object create_managed_array(sol::this_state s, sol::object t_obj, uint32_t 
     } else if (t_obj.is<::sdk::RETypeDefinition*>()) {
         t = t_obj.as<::sdk::RETypeDefinition*>()->get_runtime_type();
     } else if (t_obj.is<const char*>()) {
-        const auto tdef = ::sdk::RETypeDB::get()->find_type(t_obj.as<const char*>());
+        const auto tdef = ::sdk::find_type_definition(t_obj.as<const char*>());
 
         if (tdef != nullptr) {
             t = tdef->get_runtime_type();
@@ -396,7 +480,7 @@ sol::object create_double(sol::this_state s, double value)  {
 }
 
 sol::object create_resource(sol::this_state s, std::string type_name, std::string name) {
-    auto& types = g_framework->get_types();
+    auto& types = reframework::get_types();
 
     // NOT a type definition!!
     // this is a via::typeinfo::TypeInfo
@@ -554,7 +638,7 @@ sol::object parse_data(lua_State* l, void* data, ::sdk::RETypeDefinition* data_t
             return sol::make_object<glm::quat>(l, ret_val_q);
         }
         case "via.GameObjectRef"_fnv: {
-            static auto object_ref_type = ::sdk::RETypeDB::get()->find_type("via.GameObjectRef");
+            static auto object_ref_type = ::sdk::find_type_definition("via.GameObjectRef");
             static auto get_target_func = object_ref_type->get_method("get_Target");
             auto obj = get_target_func->call<::REManagedObject*>(sdk::get_thread_context(), data);
 
@@ -775,7 +859,7 @@ std::vector<void*>& build_args(sol::variadic_args va) {
             args.push_back((void*)n);
         } else if (lua_isstring(l, i)) {
             auto s = lua_tostring(l, i);
-            args.push_back(create_managed_string(s));
+            args.push_back(::sdk::VM::create_managed_string(utility::widen(s)));
         } else if (arg.is<Vector2f>()) {
             auto& v = arg.as<Vector2f&>();
             args.push_back((void*)&vec_storage.emplace_back(v.x, v.y, 0.0f, 0.0f));
@@ -861,331 +945,10 @@ bool is_managed_object(sol::object obj) {
     return utility::re_managed_object::is_managed_object(real_obj);
 }
 
-namespace detail {
-void* get_actual_function(void* possible_fn) {
-    auto actual_fn = possible_fn;
-    auto ip = (uintptr_t)possible_fn;
-
-    // Disassemble the first few instructions to see if there is a jmp to an actual function.
-    for (auto i = 0; i < 10; ++i) {
-        hde64s hde{};
-        auto len = hde64_disasm((void*)ip, &hde);
-        ip += len;
-
-        if (hde.opcode == 0xE9) { // jmp.
-            actual_fn = (void*)(ip + hde.imm.imm32);
-            break;
-        }
-    }
-
-    return actual_fn;
-}
-}
-
-void hook(sol::this_state s, ::sdk::REMethodDefinition* fn, sol::function pre_cb, sol::function post_cb, sol::object ignore_jmp_object) {
-    bool ignore_jmp = false;
-    if (ignore_jmp_object.is<bool>()) {
-        ignore_jmp = ignore_jmp_object.as<bool>();
-    }
-
+void hook(sol::this_state s, ::sdk::REMethodDefinition* fn, sol::protected_function pre_cb, sol::protected_function post_cb, sol::object ignore_jmp_object) {
     auto sol_state = sol::state_view{s};
     auto state = sol_state.registry()["state"].get<ScriptState*>();
-    auto& hooked_fns = state->hooked_fns();
-
-    if (auto search = hooked_fns.find(fn); search != hooked_fns.end()) {
-        auto& hooked_fn = search->second;
-
-        if (!pre_cb.is<sol::nil_t>()) {
-            if (pre_cb.is<sol::function>()) {
-                hooked_fn->script_pre_fns.emplace_back(pre_cb);
-            } else {
-                throw sol::error("sdk.hook: Pre callback must be a function");
-            }
-        } else {
-            spdlog::info("Nil pre callback passed to sdk.hook");
-        }
-
-        if (!post_cb.is<sol::nil_t>()) {
-            if (post_cb.is<sol::function>()) {
-                hooked_fn->script_post_fns.emplace_back(post_cb);
-            } else {
-                throw sol::error("sdk.hook: Post callback must be a function");
-            }
-        } else {
-            spdlog::info("Nil post callback passed to sdk.hook");
-        }
-
-        return;
-    }
-
-    auto hook = std::make_unique<ScriptState::HookedFn>();
-
-    hook->target_fn = ignore_jmp ? fn->get_function() : detail::get_actual_function(fn->get_function());
-
-    if (!pre_cb.is<sol::nil_t>()) {
-        if (pre_cb.is<sol::function>()) {
-            hook->script_pre_fns.emplace_back(pre_cb);
-        } else {
-            throw sol::error("sdk.hook: Pre callback must be a function");
-        }
-    } else {
-        spdlog::info("Nil pre callback passed to sdk.hook");
-    }
-
-    if (!post_cb.is<sol::nil_t>()) {
-        if (post_cb.is<sol::function>()) {
-            hook->script_post_fns.emplace_back(post_cb);
-        } else {
-            throw sol::error("sdk.hook: Post callback must be a function");
-        }
-    } else {
-        spdlog::info("Nil post callback passed to sdk.hook");
-    }
-
-    hook->script_args = sol_state.create_table();
-    hook->arg_tys = fn->get_param_types();
-    hook->ret_ty = fn->get_return_type();
-
-    auto& args = hook->args;
-    auto& arg_tys = hook->arg_tys;
-    auto& fn_hook = hook->fn_hook;
-    auto& g = hook->facilitator_gen;
-
-    // Make sure we have room to store the arguments.
-    args.resize(2 + fn->get_num_params());
-
-    // Generate the facilitator function that will store the arguments, call on_hook, 
-    // restore the arguments, and call the original function.
-    Xbyak::Label hook_label{}, args_label{}, this_label{}, on_pre_hook_label{}, on_post_hook_label{}, 
-        ret_addr_label{}, ret_val_label{}, orig_label{}, lock_label{}, unlock_label{};
-
-    // Save state.
-    g.push(g.rcx);
-    g.push(g.rdx);
-    g.push(g.r8);
-    g.push(g.r9);
-
-    // Lock context.
-    g.mov(g.rcx, g.ptr[g.rip + this_label]);
-    g.sub(g.rsp, 40);
-    g.call(g.ptr[g.rip + lock_label]);
-    g.add(g.rsp, 40);
-
-    // Restore state.
-    g.pop(g.r9);
-    g.pop(g.r8);
-    g.pop(g.rdx);
-    g.pop(g.rcx);
-
-    // Store args.
-    // TODO: Handle all the arguments the function takes.
-    g.mov(g.rax, g.ptr[g.rip + args_label]);
-    g.mov(g.ptr[g.rax], g.rcx); // current thread context.
-
-    auto args_start_offset = 8;
-
-    if (!fn->is_static()) {
-        args_start_offset = 16;
-        g.mov(g.ptr[g.rax + 8], g.rdx); // this ptr... probably.
-    }
-
-    for (auto i = 0u; i < fn->get_num_params(); ++i) {
-        auto arg_ty = arg_tys[i];
-        auto args_offset = args_start_offset + (i * 8);
-        auto is_float = false;
-
-        if (arg_ty->get_full_name() == "System.Single") {
-            is_float = true;
-        }
-
-        switch (args_offset) {
-        case 8: // rdx/xmm1
-            if (is_float) {
-                g.movq(g.ptr[g.rax + args_offset], g.xmm1);
-            } else {
-                g.mov(g.ptr[g.rax + args_offset], g.rdx);
-            }
-            break;
-
-        case 16: // r8/xmm2
-            if (is_float) {
-                g.movq(g.ptr[g.rax + args_offset], g.xmm2);
-            } else {
-                g.mov(g.ptr[g.rax + args_offset], g.r8);
-            }
-            break;
-
-        case 24: // r9/xmm3
-            if (is_float) {
-                g.movq(g.ptr[g.rax + args_offset], g.xmm3);
-            } else {
-                g.mov(g.ptr[g.rax + args_offset], g.r9);
-            }
-            break;
-
-        default:
-            // TODO: handle stack args.
-            break;
-        }
-    }
-
-    // Call on_pre_hook.
-    g.mov(g.rcx, g.ptr[g.rip + this_label]);
-    g.mov(g.rdx, g.ptr[g.rip + hook_label]);
-    g.sub(g.rsp, 40);
-    g.call(g.ptr[g.rip + on_pre_hook_label]);
-    g.add(g.rsp, 40);
-
-    // Save the return value so we can see if we need to call the original later.
-    g.mov(g.r11, g.rax);
-
-    // Restore args.
-    g.mov(g.rax, g.ptr[g.rip + args_label]);
-    g.mov(g.rcx, g.ptr[g.rax]); // current thread context.
-
-    if (!fn->is_static()) {
-        g.mov(g.rdx, g.ptr[g.rax + 8]); // this ptr... probably.
-    }
-
-    for (auto i = 0u; i < fn->get_num_params(); ++i) {
-        auto arg_ty = arg_tys[i];
-        auto args_offset = args_start_offset + (i * 8);
-        auto is_float = false;
-
-        if (arg_ty->get_full_name() == "System.Single") {
-            is_float = true;
-        }
-
-        switch (args_offset) {
-        case 8: // rdx/xmm1
-            if (is_float) {
-                g.movq(g.xmm1, g.ptr[g.rax + args_offset]);
-            } else {
-                g.mov(g.rdx, g.ptr[g.rax + args_offset]);
-            }
-            break;
-
-        case 16: // r8/xmm2
-            if (is_float) {
-                g.movq(g.xmm2, g.ptr[g.rax + args_offset]);
-            } else {
-                g.mov(g.r8, g.ptr[g.rax + args_offset]);
-            }
-            break;
-
-        case 24: // r9/xmm3
-            if (is_float) {
-                g.movq(g.xmm3, g.ptr[g.rax + args_offset]);
-            } else {
-                g.mov(g.r9, g.ptr[g.rax + args_offset]);
-            }
-            break;
-
-        default:
-            // TODO: handle stack args.
-            break;
-        }
-    }
-
-    // Call original function.
-    Xbyak::Label ret_label{}, skip_label{};
-
-    // Save return address.
-    g.mov(g.r10, g.ptr[g.rsp]);
-    g.mov(g.rax, g.ptr[g.rip + ret_addr_label]);
-    g.mov(g.ptr[g.rax], g.r10);
-
-    // Overwrite return address.
-    g.lea(g.rax, g.ptr[g.rip + ret_label]);
-    g.mov(g.ptr[g.rsp], g.rax);
-
-    // Determine if we need to skip the original function or not.
-    g.cmp(g.r11, (int)ScriptState::PreHookResult::CALL_ORIGINAL);
-    g.jnz(skip_label);
-
-    // Jmp to original function.
-    g.jmp(g.ptr[g.rip + orig_label]);
-
-    g.L(skip_label);
-    g.add(g.rsp, 8); // pop ret address.
-
-    g.L(ret_label);
-
-    // Save return value.
-    g.mov(g.rcx, g.ptr[g.rip + ret_val_label]);
-
-    auto is_ret_ty_float = hook->ret_ty->get_full_name() == "System.Single";
-
-    if (is_ret_ty_float) {
-        g.movq(g.ptr[g.rcx], g.xmm0);
-    } else {
-        g.mov(g.ptr[g.rcx], g.rax);
-    }
-
-    // Call on_post_hook.
-    g.mov(g.rcx, g.ptr[g.rip + this_label]);
-    g.mov(g.rdx, g.ptr[g.rip + hook_label]);
-    g.call(g.ptr[g.rip + on_post_hook_label]);
-
-    // Restore return value.
-    g.mov(g.rcx, g.ptr[g.rip + ret_val_label]);
-
-    if (is_ret_ty_float) {
-        g.movq(g.xmm0, g.ptr[g.rcx]);
-    } else {
-        g.mov(g.rax, g.ptr[g.rcx]);
-    }
-
-    // Store state.
-    g.push(g.rax);
-    g.mov(g.r10, g.ptr[g.rip + ret_addr_label]);
-    g.mov(g.r10, g.ptr[g.r10]);
-    g.push(g.r10);
-
-    // Unlock context.
-    g.mov(g.rcx, g.ptr[g.rip + this_label]);
-    g.sub(g.rsp, 32);
-    g.call(g.ptr[g.rip + unlock_label]);
-    g.add(g.rsp, 32);
-
-    // Restore state.
-    g.pop(g.r10);
-    g.pop(g.rax);
-
-    // Return.
-    g.jmp(g.r10);
-    
-    g.L(hook_label);
-    g.dq((uint64_t)hook.get());
-    g.L(args_label);
-    g.dq((uint64_t)args.data());
-    g.L(this_label);
-    g.dq((uint64_t)state);
-    g.L(on_pre_hook_label);
-    g.dq((uint64_t)&ScriptState::on_pre_hook_static);
-    g.L(on_post_hook_label);
-    g.dq((uint64_t)&ScriptState::on_post_hook_static);
-    g.L(lock_label);
-    g.dq((uint64_t)&ScriptState::lock_static);
-    g.L(unlock_label);
-    g.dq((uint64_t)&ScriptState::unlock_static);
-    g.L(ret_addr_label);
-    g.dq((uint64_t)&hook->ret_addr);
-    g.L(ret_val_label);
-    g.dq((uint64_t)&hook->ret_val);
-    g.L(orig_label);
-    // Can't do the following because the hook hasn't been created yet.
-    //g.dq(fn_hook->get_original());
-    g.dq(0);
-
-    // Hook the function to our facilitator.
-    fn_hook = std::make_unique<FunctionHook>(hook->target_fn, (void*)g.getCode());
-
-    // Set the facilitators original function pointer.
-    *(uintptr_t*)orig_label.getAddress() = fn_hook->get_original();
-
-    fn_hook->create();
-    hooked_fns.emplace(fn, std::move(hook));
+    state->add_hook(fn, pre_cb, post_cb, ignore_jmp_object);
 }
 }
 
@@ -1265,7 +1028,7 @@ void bindings::open_sdk(ScriptState* s) {
     sdk["set_native_field"] = api::sdk::set_native_field;
     sdk["get_primary_camera"] = api::sdk::get_primary_camera;
     sdk["hook"] = api::sdk::hook;
-    sdk.new_enum("PreHookResult", "CALL_ORIGINAL", ScriptState::PreHookResult::CALL_ORIGINAL, "SKIP_ORIGINAL", ScriptState::PreHookResult::SKIP_ORIGINAL);
+    sdk.new_enum("PreHookResult", "CALL_ORIGINAL", HookManager::PreHookResult::CALL_ORIGINAL, "SKIP_ORIGINAL", HookManager::PreHookResult::SKIP_ORIGINAL);
     sdk["is_managed_object"] = api::sdk::is_managed_object;
     sdk["to_managed_object"] = [](sol::this_state s, sol::object ptr) { 
         if (ptr.is<::REManagedObject*>()) {
@@ -1363,8 +1126,25 @@ void bindings::open_sdk(ScriptState* s) {
             return false;
         },
         "create_instance", &::sdk::RETypeDefinition::create_instance_full);
+
+    auto method_call = [](sdk::REMethodDefinition* def, sol::object obj, sol::variadic_args va) {
+        auto l = va.lua_state();
+
+        auto real_obj = ::api::sdk::get_real_obj(obj);
+        auto ret_val = def->invoke(real_obj, ::api::sdk::build_args(va));
+
+        if (ret_val.exception_thrown) {
+            throw sol::error("Invoke threw an exception");
+        }
+
+        // Convert return values to the correct Lua types.
+        auto ret_ty = def->get_return_type();
+
+        return ::api::sdk::parse_data(l, &ret_val, ret_ty, true);
+    };
     
     lua.new_usertype<sdk::REMethodDefinition>("REMethodDefinition",
+        sol::meta_function::call, method_call,
         "get_name", &sdk::REMethodDefinition::get_name,
         "get_return_type", &sdk::REMethodDefinition::get_return_type,
         "get_function", &sdk::REMethodDefinition::get_function,
@@ -1373,21 +1153,7 @@ void bindings::open_sdk(ScriptState* s) {
         "get_param_types", &sdk::REMethodDefinition::get_param_types,
         "get_param_names", &sdk::REMethodDefinition::get_param_names,
         "is_static", &sdk::REMethodDefinition::is_static,
-        "call", [](sdk::REMethodDefinition* def, sol::object obj, sol::variadic_args va) {
-            auto l = va.lua_state();
-
-            auto real_obj = ::api::sdk::get_real_obj(obj);
-            auto ret_val = def->invoke(real_obj, ::api::sdk::build_args(va));
-
-            if (ret_val.exception_thrown) {
-                throw sol::error("Invoke threw an exception");
-            }
-
-            // Convert return values to the correct Lua types.
-            auto ret_ty = def->get_return_type();
-
-            return ::api::sdk::parse_data(l, &ret_val, ret_ty, true);
-        }
+        "call", method_call
     );
     
     lua.new_usertype<sdk::REField>("REField",
@@ -1431,47 +1197,12 @@ void bindings::open_sdk(ScriptState* s) {
     lua.new_usertype<::REManagedObject>("REManagedObject",
         sol::meta_function::equal_to, [s](REManagedObject* lhs, REManagedObject* rhs) { return lhs == rhs; },
         "add_ref", &api::re_managed_object::add_ref,
+        "add_ref_permanent", &api::re_managed_object::add_ref_permanent,
+        "force_release", [](sol::this_state s, ::REManagedObject* obj) {
+            api::re_managed_object::release(s, obj, true);
+        },
         "release", [](sol::this_state s, ::REManagedObject* obj) {
-            auto l = s.lua_state();
-            auto sv = sol::state_view(l);
-
-            sol::lua_table objects = sv["_sol_lua_push_objects"];
-            sol::lua_table ref_counts = sv["_sol_lua_push_ref_counts"];
-            sol::lua_table ephemeral_counts = sv["_sol_lua_push_ephemeral_counts"];
-
-            if (std::optional<int> ref_count = ref_counts[(uintptr_t)obj]; ref_count && *ref_count > 0) {
-                // because of our internal refcount keeping, we shouldn't need to double check
-                // whether it's an actual object or not. hopefully?
-                //if (utility::re_managed_object::is_managed_object(obj)) {
-                    utility::re_managed_object::release(obj);
-                //}
-
-                int new_ref_count = *ref_count - 1;
-
-                if (new_ref_count == 0) {
-                    if (sol::object object = ephemeral_counts[(uintptr_t)obj]; !object.valid()) {
-                        objects[(uintptr_t)obj] = sol::make_object(l, sol::nil);
-                    }
-
-                    ref_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
-                } else {
-                    ref_counts[(uintptr_t)obj] = new_ref_count;
-                }
-
-                //ephemeral_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
-            } else if (std::optional<int> ephemeral_count = ephemeral_counts[(uintptr_t)obj]; ephemeral_count && *ephemeral_count > 0) {
-                // ephemeral counts don't actually release the object, they just decrement the count.
-                int new_ephemeral_count = *ephemeral_count - 1;
-
-                if (new_ephemeral_count == 0) {
-                    objects[(uintptr_t)obj] = sol::make_object(l, sol::nil);
-                    ephemeral_counts[(uintptr_t)obj] = sol::make_object(l, sol::nil);
-                } else {
-                    ephemeral_counts[(uintptr_t)obj] = new_ephemeral_count;
-                }
-            } else {
-                spdlog::warn("REManagedObject:release attempted to release an object that was not managed by our Lua state");
-            }
+            api::re_managed_object::release(s, obj, false);
         },
         "get_reference_count", [] (::REManagedObject* obj) { return obj->referenceCount; },
         "get_address", [](REManagedObject* obj) { return (uintptr_t)obj; },
@@ -1542,6 +1273,10 @@ void bindings::open_sdk(ScriptState* s) {
 
     lua.new_usertype<RETransform>("RETransform",
         "calculate_base_transform", &utility::re_transform::calculate_base_transform,
+        "set_position", &sdk::set_transform_position,
+        "set_rotation", &sdk::set_transform_rotation,
+        "get_position", &sdk::get_transform_position,
+        "get_rotation", &sdk::get_transform_rotation,
         sol::base_classes, sol::bases<::REComponent, ::REManagedObject>()
     );
 

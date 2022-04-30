@@ -110,6 +110,10 @@ public:
         return (ResourceManager*)sdk()->functions->get_resource_manager();
     }
 
+    inline const auto reframework() const {
+        return (REFramework*)param()->functions;
+    }
+
     void lock_lua() {
         m_lua_mtx.lock();
         m_param->functions->lock_lua();
@@ -252,6 +256,16 @@ public:
 
         API::Property* get_property(uint32_t index) const {
             return (API::Property*)API::s_instance->sdk()->tdb->get_property(*this, index);
+        }
+    };
+
+    struct REFramework {
+        operator ::REFrameworkHandle() {
+            return (::REFrameworkHandle)this;
+        }
+
+        bool is_drawing_ui() const {
+            return API::s_instance->param()->functions->is_drawing_ui();
         }
     };
 
@@ -517,6 +531,14 @@ public:
         uint32_t get_invoke_id() const {
             return API::s_instance->sdk()->method->get_invoke_id(*this);
         }
+
+        unsigned int add_hook(REFPreHookFn pre_fn, REFPostHookFn post_fn, bool ignore_jmp) const {
+            return API::s_instance->sdk()->functions->add_hook(*this, pre_fn, post_fn, ignore_jmp);
+        }
+
+        void remove_hook(unsigned int hook_id) const {
+            API::s_instance->sdk()->functions->remove_hook(*this, hook_id);
+        }
     };
 
     struct Field {
@@ -667,7 +689,7 @@ public:
                 return nullptr;
             }
 
-            return f->get_data_raw<T>(this, is_value_type);
+            return (T*)f->get_data_raw((void*)this, is_value_type);
         }
     };
 

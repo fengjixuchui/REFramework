@@ -7,6 +7,7 @@
 #include "REFramework.hpp"
 #include "sdk/REMath.hpp"
 #include "sdk/MurmurHash.hpp"
+#include "sdk/Application.hpp"
 
 #include "VR.hpp"
 #include "FirstPerson.hpp"
@@ -111,7 +112,7 @@ void FirstPerson::on_draw_ui() {
 
     m_smooth_xz_movement->draw("Smooth XZ Movement (VR)");
     m_smooth_y_movement->draw("Smooth Y Movement (VR)");
-    m_roomscale->draw("Experimental Roomscale (VR)");
+    m_roomscale->draw("Roomscale Movement (VR)");
 
     ImGui::DragFloat4("Scale Debug", (float*)&m_scale_debug.x, 1.0f, -1.0f, 1.0f);
     ImGui::DragFloat4("Scale Debug 2", (float*)&m_scale_debug2.x, 1.0f, -1.0f, 1.0f);
@@ -424,6 +425,9 @@ void FirstPerson::on_pre_application_entry(void* entry, const char* name, size_t
         case "LateUpdateBehavior"_fnv:
             on_pre_late_update_behavior(entry);
             break;
+        case "UnlockScene"_fnv:
+            on_pre_unlock_scene(entry);
+            break;
         default:
             break;
     }
@@ -458,17 +462,23 @@ void FirstPerson::on_pre_late_update_behavior(void* entry) {
     on_post_update_motion(entry);
 }
 
+void FirstPerson::on_pre_unlock_scene(void* entry) {
+    update_player_roomscale(m_player_transform);
+}
+
 void FirstPerson::on_post_late_update_behavior(void* entry) {
     
 }
 
 void FirstPerson::on_post_update_motion(void* entry, bool true_motion) {
     if (!will_be_used()) {
+        m_was_gripping_weapon = false;
         return;
     }
 
     // check it every time i guess becuase who knows what's going to happen.
     if (!update_pointers()) {
+        m_was_gripping_weapon = false;
         return;
     }
 
@@ -494,7 +504,11 @@ bool FirstPerson::on_pre_flashlight_apply_transform(::REManagedObject* flashligh
         return true;
     }
 
-    static auto via_render_mesh = sdk::RETypeDB::get()->find_type("via.render.Mesh");
+    if (m_was_gripping_weapon) {
+        return true;
+    }
+
+    static auto via_render_mesh = sdk::find_type_definition("via.render.Mesh");
     static auto via_render_mesh_enabled = via_render_mesh->get_method("get_Enabled");
 
     auto flashlight_go = ((::REComponent*)flashlight_component)->ownerGameObject;
@@ -536,7 +550,7 @@ bool FirstPerson::on_pre_flashlight_apply_transform(::REManagedObject* flashligh
     }
 
     static auto root_hash = sdk::murmur_hash::calc32("root");
-    static auto via_transform = sdk::RETypeDB::get()->find_type("via.Transform");
+    static auto via_transform = sdk::find_type_definition("via.Transform");
     static auto via_transform_get_joint_by_hash = via_transform->get_method("getJointByHash");
 
     auto root_joint = via_transform_get_joint_by_hash->call<::REJoint*>(sdk::get_thread_context(), flashlight_transform, root_hash);
@@ -610,7 +624,7 @@ bool FirstPerson::update_pointers() {
         m_camera_system == nullptr || m_camera_system->ownerGameObject == nullptr || m_sweet_light_manager == nullptr || m_sweet_light_manager->ownerGameObject == nullptr
         || m_gui_master == nullptr) 
     {
-        auto& globals = *g_framework->get_globals();
+        auto& globals = *reframework::get_globals();
         m_sweet_light_manager = globals.get<RopewaySweetLightManager>(game_namespace("SweetLightManager"));
         m_camera_system = globals.get<RopewayCameraSystem>(game_namespace("camera.CameraSystem"));
         m_post_effect_controller = globals.get<RopewayPostEffectController>(game_namespace("posteffect.PostEffectController"));
@@ -698,11 +712,13 @@ void FirstPerson::update_player_vr(RETransform* transform, bool first) {
 
 void FirstPerson::update_player_arm_ik(RETransform* transform) {
     if (!m_enabled->value() || m_camera_system == nullptr) {
+        m_was_gripping_weapon = false;
         return;
     }
 
     // so we don't go spinning everywhere in cutscenes
     if (m_last_camera_type != app::ropeway::camera::CameraControlType::PLAYER) {
+        m_was_gripping_weapon = false;
         return;
     }
 
@@ -710,6 +726,7 @@ void FirstPerson::update_player_arm_ik(RETransform* transform) {
     auto& controllers = vr_mod->get_controllers();
 
     if (controllers.empty()) {
+        m_was_gripping_weapon = false;
         return;
     }
 
@@ -717,16 +734,39 @@ void FirstPerson::update_player_arm_ik(RETransform* transform) {
     const auto is_using_controllers = vr_mod->is_using_controllers();
 
     if (!is_hmd_active || !is_using_controllers) {
+        m_was_gripping_weapon = false;
         return;
     }
 
     auto context = sdk::get_thread_context();
 
-    auto update_joint = [&](uint32_t hash, int32_t controller_index) {
+    static auto l_arm_wrist_hash = sdk::murmur_hash::calc32(L"l_arm_wrist");
+    static auto r_arm_wrist_hash = sdk::murmur_hash::calc32(L"r_arm_wrist");
+
+    static auto via_motion_def = sdk::find_type_definition("via.motion.Motion");
+    const auto via_motion = utility::re_component::find<REComponent>(transform, via_motion_def->type);
+
+    glm::quat original_left_rot_relative{glm::identity<glm::quat>()};
+    Vector4f original_left_pos_relative{};
+
+    if (via_motion != nullptr) {
+        const auto left_index = sdk::call_object_func_easy<uint32_t>(via_motion, "getJointIndexByNameHash", l_arm_wrist_hash);
+        const auto right_index = sdk::call_object_func_easy<uint32_t>(via_motion, "getJointIndexByNameHash", r_arm_wrist_hash);
+
+        const auto original_left_pos = sdk::call_object_func_easy<Vector4f>(via_motion, "getWorldPosition", left_index);
+        const auto original_right_pos = sdk::call_object_func_easy<Vector4f>(via_motion, "getWorldPosition", right_index);
+        const auto original_left_rot = sdk::call_object_func_easy<glm::quat>(via_motion, "getWorldRotation", left_index);
+        const auto original_right_rot = sdk::call_object_func_easy<glm::quat>(via_motion, "getWorldRotation", right_index);
+
+        original_left_pos_relative = glm::inverse(original_right_rot) * (original_left_pos - original_right_pos);
+        original_left_rot_relative = glm::inverse(original_right_rot) * original_left_rot;
+    }
+
+    auto calculate_joint_pos_rot = [&](uint32_t hash, int32_t controller_index) -> std::tuple<glm::quat, Vector4f> {
         auto wrist_joint = sdk::get_transform_joint_by_hash(transform, hash);
 
         if (wrist_joint == nullptr) {
-            return;
+            return std::make_tuple<glm::quat, Vector4f>(glm::identity<glm::quat>(), Vector4f{});
         }
 
         auto& wrist = utility::re_transform::get_joint_matrix(*transform, wrist_joint);
@@ -789,8 +829,68 @@ void FirstPerson::update_player_arm_ik(RETransform* transform) {
         auto new_pos = m_last_camera_matrix_pre_vr[3] + hand_pos;
         new_pos.w = 1.0f;
 
+        return std::make_tuple(rotation_quat, new_pos);
+    };
+
+    auto [rh_rotation, rh_pos] = calculate_joint_pos_rot(r_arm_wrist_hash, 1);
+    auto [lh_rotation, lh_pos] = calculate_joint_pos_rot(l_arm_wrist_hash, 0);
+
+    auto lh_grip_position = rh_pos + (rh_rotation * original_left_pos_relative);
+    const auto lh_delta_to_rh = (lh_pos - rh_pos);
+    const auto lh_grip_delta_to_rh = (lh_grip_position - rh_pos);
+    const auto lh_grip_delta = (lh_grip_position - lh_pos);
+    const auto lh_grip_distance = glm::length(lh_grip_delta);
+
+    const auto vr = VR::get();
+    const auto is_holding_left_grip = vr->is_action_active(vr->get_action_grip(), vr->get_left_joystick());
+
+    static auto player_condition_def = sdk::find_type_definition(game_namespace("survivor.SurvivorCondition"));
+    const auto player_condition = utility::re_component::find<REComponent>(transform, player_condition_def->get_type());
+    const bool is_reloading = player_condition != nullptr ? sdk::call_object_func_easy<bool>(player_condition, "get_IsReload") : false;
+    const bool is_aiming = player_condition != nullptr ? sdk::call_object_func_easy<bool>(player_condition, "get_IsHold") : false;
+    
+    if (is_aiming && !is_reloading && (lh_grip_distance <= 0.1 || (m_was_gripping_weapon && is_holding_left_grip))) {
+        // pistol "fix"
+        if (glm::length(Vector3f{original_left_pos_relative}) >= 0.1f) {
+            const auto original_grip_rot = utility::math::to_quat(glm::normalize(lh_grip_delta_to_rh));
+            const auto current_grip_rot = utility::math::to_quat(glm::normalize(lh_delta_to_rh));
+
+            const auto grip_rot_delta = glm::normalize(current_grip_rot * glm::inverse(original_grip_rot));
+
+            // Adjust the right hand rotation
+            rh_rotation = glm::normalize(grip_rot_delta * rh_rotation);
+
+            // Adjust the grip position
+            lh_grip_position = rh_pos + (rh_rotation * original_left_pos_relative);
+            lh_grip_position.w = 1.0f;
+        }
+
+        // Set the left hand position and rotation to the grip position
+        lh_pos = lh_grip_position;
+        lh_rotation = rh_rotation * original_left_rot_relative;
+
+        m_was_gripping_weapon = true;
+    } else {
+        m_was_gripping_weapon = false;
+
+        if (is_reloading) {
+            lh_pos = lh_grip_position;
+            lh_rotation = rh_rotation * original_left_rot_relative;
+        } else {
+            lh_pos = lh_pos;
+            lh_rotation = lh_rotation;
+        }
+    }
+
+    auto update_joint = [&](uint32_t hash, int32_t controller_index, glm::quat& rotation_quat, Vector4f& new_pos) {
+        auto wrist_joint = sdk::get_transform_joint_by_hash(transform, hash);
+
+        if (wrist_joint == nullptr) {
+            return;
+        }
+
         // Get Arm IK component
-        static auto arm_fit_t = sdk::RETypeDB::get()->find_type(game_namespace("IkArmFit"));
+        static auto arm_fit_t = sdk::find_type_definition(game_namespace("IkArmFit"));
         auto arm_fit = utility::re_component::find<REComponent>(transform, arm_fit_t->get_type());
 
         // We will use the game's IK system instead of building our own because it's a pain in the ass
@@ -903,6 +1003,7 @@ void FirstPerson::update_player_arm_ik(RETransform* transform) {
                     // Set the target matrix to the VR controller's position (new_pos, rotation_quat)
                     target_matrix = Matrix4x4f{ rotation_quat };
                     target_matrix[3] = new_pos;
+                    target_matrix[3].w = 1.0f;
 
                     //spdlog::info("About to call updateIk");
 
@@ -935,11 +1036,8 @@ void FirstPerson::update_player_arm_ik(RETransform* transform) {
     };
 
     if (is_using_controllers)  {
-        static auto l_arm_wrist_hash = sdk::murmur_hash::calc32(L"l_arm_wrist");
-        static auto r_arm_wrist_hash = sdk::murmur_hash::calc32(L"r_arm_wrist");
-
-        update_joint(l_arm_wrist_hash, 0);
-        update_joint(r_arm_wrist_hash, 1);
+        update_joint(l_arm_wrist_hash, 0, lh_rotation, lh_pos);
+        update_joint(r_arm_wrist_hash, 1, rh_rotation, rh_pos);
     }
 }
 
@@ -976,7 +1074,7 @@ void FirstPerson::update_player_muzzle_behavior(RETransform* transform, bool res
 
     // We're going to modify the player's weapon (gun) to fire from the muzzle instead of the camera
     // Luckily the game has that built-in so we don't really need to hook anything
-    static auto equipment_t = sdk::RETypeDB::get()->find_type(game_namespace("survivor.Equipment"));
+    static auto equipment_t = sdk::find_type_definition(game_namespace("survivor.Equipment"));
     auto equipment = utility::re_component::find<REComponent>(transform, equipment_t->get_type());
 
     if (equipment != nullptr) {
@@ -987,8 +1085,8 @@ void FirstPerson::update_player_muzzle_behavior(RETransform* transform, bool res
             auto main_weapon_game_object = sdk::call_object_func<REGameObject*>(main_weapon, "get_GameObject", context, main_weapon);
             auto main_weapon_transform = main_weapon_game_object != nullptr ? main_weapon_game_object->transform : (RETransform*)nullptr;
 
-            static auto implement_gun_typedef = sdk::RETypeDB::get()->find_type(game_namespace("implement.Gun"));
-            static auto implement_melee_typedef = sdk::RETypeDB::get()->find_type(game_namespace("implement.Melee"));
+            static auto implement_gun_typedef = sdk::find_type_definition(game_namespace("implement.Gun"));
+            static auto implement_melee_typedef = sdk::find_type_definition(game_namespace("implement.Melee"));
 
             auto main_weapon_t = utility::re_managed_object::get_type_definition(main_weapon);
 
@@ -1001,7 +1099,7 @@ void FirstPerson::update_player_muzzle_behavior(RETransform* transform, bool res
 
                     // Set the fire bullet type to AlongMuzzle, which fires from the muzzle's position and rotation
                     if (is_using_controllers && !restore) {
-                        static auto throw_grenade_generator_type = sdk::RETypeDB::get()->find_type(game_namespace("weapon.generator.ThrowGrenadeGenerator"));
+                        static auto throw_grenade_generator_type = sdk::find_type_definition(game_namespace("weapon.generator.ThrowGrenadeGenerator"));
                         auto shell_generator = *sdk::get_object_field<REManagedObject*>(main_weapon, "<ShellGenerator>k__BackingField");
                         auto is_grenade = false;
 
@@ -1055,14 +1153,17 @@ void FirstPerson::update_player_muzzle_behavior(RETransform* transform, bool res
 
 void FirstPerson::update_player_body_ik(RETransform* transform, bool restore, bool first) {
     if (!restore && !m_enabled->value()) {
+        m_was_gripping_weapon = false;
         return;
     }
 
     if (m_camera_system == nullptr) {
+        m_was_gripping_weapon = false;
         return;
     }
 
     if (m_last_camera_type != app::ropeway::camera::CameraControlType::PLAYER) {
+        m_was_gripping_weapon = false;
         return;
     }
 
@@ -1084,8 +1185,8 @@ void FirstPerson::update_player_body_ik(RETransform* transform, bool restore, bo
         }
     }
 
-    static auto ik_leg_def = sdk::RETypeDB::get()->find_type("via.motion.IkLeg");
-    static auto via_motion_def = sdk::RETypeDB::get()->find_type("via.motion.Motion");
+    static auto ik_leg_def = sdk::find_type_definition("via.motion.IkLeg");
+    static auto via_motion_def = sdk::find_type_definition("via.motion.Motion");
     auto ik_leg = utility::re_component::find<REComponent>(transform, ik_leg_def->type);
     auto via_motion = utility::re_component::find<REComponent>(transform, via_motion_def->type);
 
@@ -1112,20 +1213,6 @@ void FirstPerson::update_player_body_ik(RETransform* transform, bool restore, bo
             rotation = m_last_controller_rotation_vr;
         } else {
             rotation = utility::math::remove_y_component(Matrix4x4f{glm::normalize(m_last_controller_rotation_vr)});
-        }
-
-        bool updated_transform = false;
-
-        // Experimental roomscale movement.
-        if (m_roomscale->value() && first && glm::length(Vector3f{hmd_offset.x, 0.0f, hmd_offset.z}) > 0.5f) {
-            const auto current_pos = sdk::get_transform_position(transform);
-            sdk::set_transform_position(transform, current_pos + (rotation * Vector4f{ hmd_offset.x, 0.0f, hmd_offset.z, 0.0f }));
-
-            standing_origin = Vector4f{headset_pos.x, standing_origin.y, headset_pos.z, standing_origin.w};
-            vr_mod->set_standing_origin(standing_origin);
-
-            hmd_offset = headset_pos - standing_origin;
-            updated_transform = true;
         }
 
         // Create a final offset which will keep the player's head where they want
@@ -1181,24 +1268,7 @@ void FirstPerson::update_player_body_ik(RETransform* transform, bool restore, bo
         // a small side effect is that the player can slightly float, but it's worth it.
         // not a TDB method unfortunately.
         utility::re_managed_object::call_method(ik_leg, "set_CenterAdjust", via::motion::IkLeg::CenterAdjust::None);
-
-        if (updated_transform && center_joint != nullptr) {
-            Vector4f true_cog_pos{};
-            const auto cog_joint_index = ((sdk::Joint*)center_joint)->get_joint_index();
-            sdk::call_object_func<Vector4f*>(via_motion, "getWorldPosition", &true_cog_pos, sdk::get_thread_context(), via_motion, cog_joint_index);
-
-            const auto original_cog_pos = sdk::get_joint_position(center_joint);
-            sdk::set_joint_position(center_joint, true_cog_pos);
-
-            sdk::call_object_func<void*>(ik_leg, "firstUpdate", sdk::get_thread_context(), ik_leg);
-            sdk::call_object_func<void*>(ik_leg, "secondUpdate", sdk::get_thread_context(), ik_leg);
-
-            update_player_arm_ik(transform);
-
-            sdk::set_joint_position(center_joint, original_cog_pos);
-        } else {
-            update_player_arm_ik(transform);
-        }
+        update_player_arm_ik(transform);
     }
 }
 
@@ -1215,18 +1285,8 @@ void FirstPerson::update_player_body_rotation(RETransform* transform) {
         return;
     }
 
-    static auto jack_dominator_typedef = sdk::RETypeDB::get()->find_type(game_namespace("JackDominator"));
-    static auto jacked_method = jack_dominator_typedef->get_method("get_Jacked");
-
-    auto jack_dominator = utility::re_component::find<::REComponent*>(transform, jack_dominator_typedef->get_type());
-
-    if (jack_dominator != nullptr) {
-        const auto is_jacked = jacked_method->call<bool>(sdk::get_thread_context(), jack_dominator);
-
-        // using a ladder, being grabbed, jumping down, etc
-        if (is_jacked) {
-            return;
-        }
+    if (is_jacked(transform)) {
+        return;
     }
 
     auto player_matrix = glm::mat4{ *(glm::quat*)&transform->angles };
@@ -1267,6 +1327,63 @@ void FirstPerson::update_player_body_rotation(RETransform* transform) {
 
     // Finally rotate the player transform to match the camera in a two-dimensional fashion
     transform->angles = *(Vector4f*)&camera_quat;
+}
+
+void FirstPerson::update_player_roomscale(RETransform* transform) {
+    const auto now = std::chrono::steady_clock::now();
+
+    if (transform == nullptr) {
+        m_last_roomscale_failure = now;
+        return;
+    }
+
+    if (!m_enabled->value() || !will_be_used() || m_last_camera_type != app::ropeway::camera::CameraControlType::PLAYER) {
+        m_last_roomscale_failure = now;
+        return;
+    }
+
+    auto vr = VR::get();
+
+    if (!vr->is_hmd_active() || !m_roomscale->value()) {
+        m_last_roomscale_failure = now;
+        return;
+    }
+
+    if (!update_pointers()) {
+        m_last_roomscale_failure = now;
+        return;
+    }
+
+    if (is_jacked(transform)) {
+        m_last_roomscale_failure = now;
+        return;
+    }
+
+    // try to fix some weirdness after exiting cutscenes and stuff
+    if ((now - m_last_roomscale_failure) < std::chrono::milliseconds(1000)) {
+        return;
+    }
+    
+    // Roomscale movement.
+    const auto old_standing_origin = vr->get_standing_origin();
+    const auto old_hmd_pos = vr->get_position(0);
+    const auto hmd_pos = Vector4f{old_hmd_pos.x, old_standing_origin.y, old_hmd_pos.z, old_hmd_pos.w};
+
+    if (glm::length(hmd_pos - old_standing_origin) > 0.01f) {
+        const auto t = sdk::Application::get()->get_delta_time() * 0.1f;
+        const auto standing_origin = glm::lerp(old_standing_origin, hmd_pos, glm::length(hmd_pos - old_standing_origin) * t);
+        vr->set_standing_origin(standing_origin);
+
+        const auto standing_diff = standing_origin - old_standing_origin;
+
+        const auto player_pos = sdk::get_transform_position(transform);
+        const auto& last_render_matrix = vr->get_last_render_matrix();
+        const auto lerp_to = Vector4f{last_render_matrix[3].x, player_pos.y, last_render_matrix[3].z, player_pos.w};
+        const auto new_pos = player_pos + (glm::normalize(lerp_to - player_pos) * glm::length(standing_diff));
+
+        // BAD idea to call this without no_dirty while scene is locked. causes parent objects to get stuck.
+        sdk::set_transform_position(transform, new_pos, true);
+    }
 }
 
 void FirstPerson::update_camera_transform(RETransform* transform) {
@@ -1742,7 +1859,22 @@ bool FirstPerson::is_first_person_allowed() const {
     return m_last_camera_type == app::ropeway::camera::CameraControlType::PLAYER;
 }
 
+bool FirstPerson::is_jacked(RETransform* transform) const {
+    static auto jack_dominator_typedef = sdk::find_type_definition(game_namespace("JackDominator"));
+    static auto jacked_method = jack_dominator_typedef->get_method("get_Jacked");
+
+    auto jack_dominator = utility::re_component::find<::REComponent*>(transform, jack_dominator_typedef->get_type());
+
+    if (jack_dominator != nullptr) {
+        return jacked_method->call<bool>(sdk::get_thread_context(), jack_dominator);
+    }
+
+    return false;
+}
+
 void FirstPerson::on_disabled() {
+    m_was_gripping_weapon = false;
+
     VR::get()->set_rotation_offset(glm::identity<glm::quat>());
 
     if (!update_pointers()) {

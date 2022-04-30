@@ -46,11 +46,16 @@ public:
     // non-virtual callbacks
     void on_pre_update_behavior(void* entry);
     void on_pre_late_update_behavior(void* entry);
+    void on_pre_unlock_scene(void* entry);
     void on_post_late_update_behavior(void* entry);
     void on_post_update_motion(void* entry, bool true_motion = false);
 
     // non-virtual callbacks called from lua
     bool on_pre_flashlight_apply_transform(::REManagedObject* flashlight_component);
+
+    bool was_gripping_weapon() const {
+        return m_was_gripping_weapon;
+    }
 
 protected:
     // gross
@@ -69,6 +74,7 @@ private:
     void update_player_muzzle_behavior(RETransform* transform, bool restore = false);
     void update_player_body_ik(RETransform* transform, bool restore = false, bool first = false);
     void update_player_body_rotation(RETransform* transform);
+    void update_player_roomscale(RETransform* transform);
     void update_camera_transform(RETransform* transform);
     void update_sweet_light_context(RopewaySweetLightManagerContext* ctx);
     void update_player_bones(RETransform* transform);
@@ -76,6 +82,7 @@ private:
     void update_joint_names();
     float update_delta_time(REComponent* component);
     bool is_first_person_allowed() const;
+    bool is_jacked(RETransform* transform) const;
 
     // Needs to be recursive for some reason. Otherwise freeze.
     std::recursive_mutex m_matrix_mutex{};
@@ -120,6 +127,7 @@ private:
     float m_interp_camera_speed{ 100.0f };
     float m_interp_bone_scale{ 1.0f };
     float m_vr_scale{ 1.0f };
+    std::chrono::steady_clock::time_point m_last_roomscale_failure{ std::chrono::steady_clock::now() };
 
     Vector4f m_scale_debug{ 1.0f, 1.0f, 1.0f, 1.0f };
     Vector4f m_scale_debug2{ 1.0f, 1.0f, 1.0f, 1.0f };
@@ -152,6 +160,7 @@ private:
     void on_disabled();
     bool m_wants_disable{false};
     bool m_was_hmd_active{false};
+    bool m_was_gripping_weapon{false};
 
 
     const ModToggle::Ptr m_smooth_xz_movement{ ModToggle::create(generate_name("SmoothXZMovementVR"), true) };
@@ -190,7 +199,8 @@ private:
         *m_fov_mult,
         *m_camera_scale,
         *m_bone_scale,
-        *m_current_fov
+        *m_current_fov,
+        *m_roomscale
     };
 };
 

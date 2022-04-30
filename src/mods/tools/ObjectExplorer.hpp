@@ -31,6 +31,10 @@
 
 namespace sdk {
 struct RETypeDefinition;
+
+namespace renderer {
+class RenderLayer;
+}
 }
 
 namespace genny {
@@ -121,6 +125,9 @@ struct ParsedType {
 
 class ObjectExplorer : public Tool {
 public:
+    static std::shared_ptr<ObjectExplorer>& get();
+
+public:
     ObjectExplorer();
 
     std::string_view get_name() const override { return "ObjectExplorer"; };
@@ -129,6 +136,8 @@ public:
     void on_frame() override;
     void on_lua_state_created(sol::state& lua) override;
 
+    void handle_address(Address address, int32_t offset = -1, Address parent = nullptr, Address real_address = nullptr);
+    
 private:
     void display_pins();
 
@@ -140,10 +149,10 @@ private:
 #endif
     void generate_sdk();
 
-    void handle_address(Address address, int32_t offset = -1, Address parent = nullptr, Address real_address = nullptr);
     void handle_game_object(REGameObject* game_object);
     void handle_component(REComponent* component);
     void handle_transform(RETransform* transform);
+    void handle_render_layer(sdk::renderer::RenderLayer* layer);
     void handle_type(REManagedObject* obj, REType* t);
 
     void display_enum_value(std::string_view name, int64_t value);
@@ -156,7 +165,8 @@ private:
     int32_t get_field_offset(REManagedObject* obj, VariableDescriptor* desc, REType* type_info);
 
     bool widget_with_context(void* address, std::function<bool()> widget);
-    void context_menu(void* address);
+    bool widget_with_context(void* address, const std::string& name, std::function<bool()> widget);
+    void context_menu(void* address, std::optional<std::string> name = std::nullopt);
     void make_same_line_text(std::string_view text, const ImVec4& color);
 
     void make_tree_offset(REManagedObject* object, uint32_t offset, std::string_view name, std::function<void()> widget = nullptr);

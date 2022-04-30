@@ -23,6 +23,7 @@ extern "C" {
 #include "Mods.hpp"
 #include "mods/PluginLoader.hpp"
 #include "sdk/REGlobals.hpp"
+#include "sdk/SDK.hpp"
 
 #include "ExceptionHandler.hpp"
 #include "LicenseStrings.hpp"
@@ -920,11 +921,11 @@ void REFramework::draw_about() {
         ImGui::TreePush("Licenses");
 
         struct License {
-            const char* name;
-            const char* text;
+            std::string name;
+            std::string text;
         };
 
-        static constexpr std::array<License, 9> licenses{
+        static std::array<License, 11> licenses{
             License{ "glm", license::glm },
             License{ "imgui", license::imgui },
             License{ "minhook", license::minhook },
@@ -934,11 +935,13 @@ void REFramework::draw_about() {
             License{ "lua", license::lua },
             License{ "sol", license::sol },
             License{ "json", license::json },
+            License{ "asmjit", license::asmjit },
+            License{ "zydis", utility::narrow(license::zydis) },
         };
 
         for (const auto& license : licenses) {
-            if (ImGui::CollapsingHeader(license.name)) {
-                ImGui::TextWrapped(license.text);
+            if (ImGui::CollapsingHeader(license.name.c_str())) {
+                ImGui::TextWrapped(license.text.c_str());
             }
         }
 
@@ -1165,8 +1168,7 @@ bool REFramework::initialize() {
 
         // Game specific initialization stuff
         std::thread init_thread([this]() {
-            m_types = std::make_unique<RETypes>();
-            m_globals = std::make_unique<REGlobals>();
+            reframework::initialize_sdk();
             m_mods = std::make_unique<Mods>();
 
             auto e = m_mods->on_initialize();

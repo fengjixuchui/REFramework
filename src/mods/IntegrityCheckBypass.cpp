@@ -148,7 +148,7 @@ std::optional<std::string> IntegrityCheckBypass::on_initialize() {
 
 #ifdef MHRISE
     // this is pretty much what it was like finding this, you just gotta look a little closer!
-    const auto very_cool_type = sdk::RETypeDB::get()->find_type_by_fqn(0x83f09f47);
+    const auto very_cool_type = sdk::find_type_definition_by_fqn(0x83f09f47);
     static std::vector<Patch::Ptr> very_cool_patches{};
 
     auto find_method_by_hash = [](sdk::RETypeDefinition* t, size_t hash) -> sdk::REMethodDefinition* {
@@ -188,7 +188,7 @@ std::optional<std::string> IntegrityCheckBypass::on_initialize() {
         spdlog::error("[{:s}]: Could not find very_cool_type!", get_name().data());
     }
 
-    const auto very_awesome_type = sdk::RETypeDB::get()->find_type_by_fqn(0xce04a0c6);
+    const auto very_awesome_type = sdk::find_type_definition_by_fqn(0xce04a0c6);
 
     if (very_awesome_type != nullptr) {
         const auto very_awesome_method = find_method_by_hash(very_awesome_type, 0x9f79221341cfcb18);
@@ -246,7 +246,7 @@ void IntegrityCheckBypass::on_frame() {
 #ifdef RE8
 void IntegrityCheckBypass::disable_update_timers(const std::string& name) const {
     // get the singleton correspdonding to the given name
-    auto manager = g_framework->get_globals()->get<REManagedObject>(name);
+    auto manager = reframework::get_globals()->get<REManagedObject>(name);
 
     // If the interact manager is null, we're probably not in the game
     if (manager == nullptr || manager->info == nullptr || manager->info->classInfo == nullptr) {

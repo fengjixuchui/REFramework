@@ -3,6 +3,7 @@
 #include <fstream>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <glm/gtx/transform.hpp>
 
 #if defined(RE2) || defined(RE3) || defined(DMC5)
 #include "sdk/regenny/re3/via/Window.hpp"
@@ -26,6 +27,7 @@
 #include "utility/Scan.hpp"
 #include "utility/FunctionHook.hpp"
 #include "utility/Module.hpp"
+#include "utility/Memory.hpp"
 
 #include "FirstPerson.hpp"
 #include "ManualFlashlight.hpp"
@@ -51,8 +53,10 @@ std::shared_ptr<VR>& VR::get() {
 std::unique_ptr<FunctionHook> g_get_size_hook{};
 std::unique_ptr<FunctionHook> g_input_hook{};
 std::unique_ptr<FunctionHook> g_projection_matrix_hook{};
+std::unique_ptr<FunctionHook> g_projection_matrix_hook2{};
 std::unique_ptr<FunctionHook> g_view_matrix_hook{};
 std::unique_ptr<FunctionHook> g_overlay_draw_hook{};
+std::unique_ptr<FunctionHook> g_post_effect_draw_hook{};
 std::unique_ptr<FunctionHook> g_wwise_listener_update_hook{};
 //std::unique_ptr<FunctionHook> g_get_sharpness_hook{};
 
@@ -69,6 +73,10 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
     }
 
     auto mod = VR::get();
+
+    if (mod->m_disable_backbuffer_size_override) {
+        return original_func(scene_view, result);
+    }
 
     auto regenny_view = (regenny::via::SceneView*)scene_view;
     auto window = regenny_view->window;
@@ -89,7 +97,36 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
 #endif
             window->width = mod->get_hmd_width();
             window->height = mod->get_hmd_height();
+
+            if (mod->m_is_d3d12 && mod->m_d3d12.is_initialized()) {
+                const auto& backbuffer_size = mod->m_d3d12.get_backbuffer_size();
+
+                if (backbuffer_size[0] > 0 && backbuffer_size[1] > 0) {
+                    if (std::abs((int)backbuffer_size[0] - (int)window->width) > 50 || std::abs((int)backbuffer_size[1] - (int)window->height) > 50) {
+                        const auto now = mod->m_frame_count;
+
+                        if (!mod->m_backbuffer_inconsistency) {
+                            mod->m_backbuffer_inconsistency_start = now;
+                            mod->m_backbuffer_inconsistency = true;
+                        }
+
+                        const auto is_true_inconsistency = (now - mod->m_backbuffer_inconsistency_start) >= 5;
+
+                        if (is_true_inconsistency) {
+                            // Force a reset of the backbuffer size
+                            window->width = mod->get_hmd_width() + 1;
+                            window->height = mod->get_hmd_height() + 1;
+
+                            // m_backbuffer_inconsistency gets set to false on device reset.
+                        }
+                    }
+                } else {
+                    mod->m_backbuffer_inconsistency = false;
+                }
+            }
         } else {
+            mod->m_backbuffer_inconsistency = false;
+
 #ifndef RE7
             window->width = (uint32_t)window->borderless_size.w;
             window->height = (uint32_t)window->borderless_size.h;
@@ -129,9 +166,9 @@ Matrix4x4f* VR::camera_get_projection_matrix_hook(REManagedObject* camera, Matri
         return original_func(camera, result);
     }
 
-    if (camera != sdk::get_primary_camera()) {
+    /*if (camera != sdk::get_primary_camera()) {
         return original_func(camera, result);
-    }
+    }*/
 
     if (!vr->m_in_render) {
        // return original_func(camera, result);
@@ -144,6 +181,38 @@ Matrix4x4f* VR::camera_get_projection_matrix_hook(REManagedObject* camera, Matri
     // Get the projection matrix for the correct eye
     // For some reason we need to flip the projection matrix here?
     *result = vr->get_current_projection_matrix(false);
+
+    return result;
+}
+
+Matrix4x4f* VR::gui_camera_get_projection_matrix_hook(REManagedObject* camera, Matrix4x4f* result) {
+    auto original_func = g_projection_matrix_hook2->get_original<decltype(VR::gui_camera_get_projection_matrix_hook)>();
+
+    auto vr = VR::get();
+
+    if (result == nullptr || !g_framework->is_ready() || !vr->m_is_hmd_active || vr->m_disable_gui_camera_projection_matrix_override) {
+        return original_func(camera, result);
+    }
+
+    /*if (camera != sdk::get_primary_camera()) {
+        return original_func(camera, result);
+    }*/
+
+    if (!vr->m_in_render) {
+       // return original_func(camera, result);
+    }
+
+    if (vr->m_in_lightshaft) {
+        //return original_func(camera, result);
+    }
+
+    // Get the projection matrix for the correct eye
+    // For some reason we need to flip the projection matrix here?
+#ifndef RE7
+    *result = vr->get_current_projection_matrix(false);
+#else
+    *result = vr->get_current_projection_matrix(true);
+#endif
 
     return result;
 }
@@ -279,8 +348,9 @@ void VR::inputsystem_update_hook(void* ctx, REManagedObject* input_system) {
     mod->openvr_input_to_re2_re3(input_system);
 }
 
-void VR::overlay_draw_hook(void* layer, void* render_ctx) {
-    auto original_func = g_overlay_draw_hook->get_original<decltype(VR::overlay_draw_hook)>();
+void VR::RenderLayerHook<sdk::renderer::layer::Overlay>::draw(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.overlay.draw_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::Overlay>::draw)>();
 
     if (!g_framework->is_ready()) {
         original_func(layer, render_ctx);
@@ -289,12 +359,129 @@ void VR::overlay_draw_hook(void* layer, void* render_ctx) {
 
     // just don't render anything at all.
     // overlays just seem to break stuff in VR.
-    auto mod = VR::get();
-
     if (!mod->m_is_hmd_active) {
         original_func(layer, render_ctx);
         return;
     }
+
+    // NOT RE3
+    // for some reason RE3 has weird issues with the overlay rendering
+    // causing double vision
+#ifndef RE3
+    if (mod->m_allow_engine_overlays->value()) {
+        original_func(layer, render_ctx);
+    }
+#endif
+}
+
+void VR::RenderLayerHook<sdk::renderer::layer::Overlay>::update(sdk::renderer::layer::Overlay* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.overlay.update_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::Overlay>::update)>();
+
+    if (!g_framework->is_ready() || !mod->m_is_hmd_active) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    original_func(layer, render_ctx);
+}
+
+void VR::RenderLayerHook<sdk::renderer::layer::PostEffect>::draw(sdk::renderer::layer::PostEffect* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.post_effect.draw_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::PostEffect>::draw)>();
+
+    if (!g_framework->is_ready() || !mod->m_is_hmd_active) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    auto scene_layer = layer->get_parent();
+    uint32_t previous_distortion_type = 0;
+
+    const auto camera = sdk::get_primary_camera();
+
+    if (camera == nullptr) {
+        original_func(layer, render_ctx);
+        return;
+    }
+    
+    static auto render_output_type = sdk::find_type_definition("via.render.RenderOutput")->get_type();
+    auto render_output_component = utility::re_component::find(camera, render_output_type);
+
+    if (render_output_component == nullptr) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    if (!mod->m_disable_post_effect_fix) {
+        // Set the distortion type back to flatscreen mode
+        // this will fix various graphical bugs
+        //sdk::call_object_func_easy<void*>(render_output_component, "set_DistortionType", 0); // None
+
+        if (scene_layer != nullptr) {
+            previous_distortion_type = sdk::call_object_func_easy<uint32_t>(scene_layer, "get_DistortionType");
+            sdk::call_object_func_easy<void*>(scene_layer, "set_DistortionType", 0); // None
+        }
+    }
+
+    // call the original func
+    original_func(layer, render_ctx);
+    
+    if (!mod->m_disable_post_effect_fix) {
+        // Restore the distortion type back to VR mode
+        // to fix TAA
+        if (scene_layer != nullptr) {
+            sdk::call_object_func_easy<void*>(scene_layer, "set_DistortionType", previous_distortion_type); // Left
+        }
+
+        //mod->fix_temporal_effects();
+    }
+}
+
+void VR::RenderLayerHook<sdk::renderer::layer::PostEffect>::update(sdk::renderer::layer::PostEffect* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.post_effect.update_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::PostEffect>::update)>();
+
+    if (!g_framework->is_ready() || !mod->m_is_hmd_active) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    original_func(layer, render_ctx);
+}
+
+void VR::RenderLayerHook<sdk::renderer::layer::Scene>::draw(sdk::renderer::layer::Scene* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.scene.draw_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::Scene>::draw)>();
+
+    if (!g_framework->is_ready() || !mod->m_is_hmd_active) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    original_func(layer, render_ctx);
+}
+
+void VR::RenderLayerHook<sdk::renderer::layer::Scene>::update(sdk::renderer::layer::Scene* layer, void* render_ctx) {
+    auto mod = VR::get();
+    auto original_func = mod->m_layer_hooks.scene.update_hook->get_original<decltype(VR::RenderLayerHook<sdk::renderer::layer::Scene>::update)>();
+
+    if (!g_framework->is_ready() || !mod->m_is_hmd_active) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    auto scene_info = layer->get_scene_info();
+
+    if (mod->m_disable_temporal_fix) {
+        original_func(layer, render_ctx);
+        return;
+    }
+
+    // Temporal fix
+    const auto prev_view_proj = scene_info->view_projection_matrix;
+    original_func(layer, render_ctx);
+    scene_info->old_view_projection_matrix = prev_view_proj;
 }
 
 void VR::wwise_listener_update_hook(void* listener) {
@@ -414,7 +601,19 @@ std::optional<std::string> VR::on_initialize() {
         return hijack_error;
     }
 
-    hijack_error = hijack_overlay_renderer();
+    hijack_error = hijack_render_layer(m_layer_hooks.overlay);
+
+    if (hijack_error) {
+        return hijack_error;
+    }
+
+    hijack_error = hijack_render_layer(m_layer_hooks.post_effect);
+
+    if (hijack_error) {
+        return hijack_error;
+    }
+
+    hijack_error = hijack_render_layer(m_layer_hooks.scene);
 
     if (hijack_error) {
         return hijack_error;
@@ -458,6 +657,14 @@ void VR::on_lua_state_created(sol::state& lua) {
         "get_action_joystick_click", &VR::get_action_joystick_click,
         "get_action_a_button", &VR::get_action_a_button,
         "get_action_b_button", &VR::get_action_b_button,
+        "get_action_weapon_dial", &VR::get_action_weapon_dial,
+        "get_action_minimap", &VR::get_action_minimap,
+        "get_action_block", &VR::get_action_block,
+        "get_action_dpad_up", &VR::get_action_dpad_up,
+        "get_action_dpad_down", &VR::get_action_dpad_down,
+        "get_action_dpad_left", &VR::get_action_dpad_left,
+        "get_action_dpad_right", &VR::get_action_dpad_right,
+        "get_action_heal", &VR::get_action_heal,
         "get_left_joystick", &VR::get_left_joystick,
         "get_right_joystick", &VR::get_right_joystick,
         "is_using_controllers", &VR::is_using_controllers,
@@ -468,7 +675,9 @@ void VR::on_lua_state_created(sol::state& lua) {
         "toggle_hmd_oriented_audio", &VR::toggle_hmd_oriented_audio,
         "apply_hmd_transform", [](VR* vr, glm::quat& rotation, Vector4f& position) {
             vr->apply_hmd_transform(rotation, position);
-        }
+        },
+        "trigger_haptic_vibration", &VR::trigger_haptic_vibration,
+        "get_last_render_matrix", &VR::get_last_render_matrix
     );
 
     lua["vrmod"] = this;
@@ -663,6 +872,37 @@ std::optional<std::string> VR::hijack_camera() {
         return "VR init failed: via.Camera.get_ProjectionMatrix native function hook failed.";
     }
 
+    spdlog::info("Hooked via.Camera.get_ProjectionMatrix");
+
+    const auto get_projection_matrix = native_func;
+
+    ///////////////////////////////
+    // Hook GUI camera projection matrix start
+    ///////////////////////////////
+    func = sdk::find_native_method("via.gui.GUICamera", "get_ProjectionMatrix");
+
+    if (func != nullptr) {
+        spdlog::info("via.gui.GUICamera.get_ProjectionMatrix: {:x}", (uintptr_t)func);
+        
+        // Pattern scan for the native function call
+        ref = utility::scan((uintptr_t)func, 0x100, "49 8B C8 E8");
+
+        if (ref) {
+            native_func = utility::calculate_absolute(*ref + 4);
+
+            if (native_func != get_projection_matrix) {
+                // Hook the native function
+                g_projection_matrix_hook2 = std::make_unique<FunctionHook>(native_func, gui_camera_get_projection_matrix_hook);
+
+                if (g_projection_matrix_hook2->create()) {
+                    spdlog::info("Hooked via.gui.GUICamera.get_ProjectionMatrix");
+                }
+            } else {
+                spdlog::info("Did not hook via.gui.GUICamera.get_ProjectionMatrix, same as via.Camera.get_ProjectionMatrix");
+            }
+        }
+    }
+
     ///////////////////////////////
     // Hook view matrix start
     ///////////////////////////////
@@ -693,44 +933,62 @@ std::optional<std::string> VR::hijack_camera() {
     return std::nullopt;
 }
 
-std::optional<std::string> VR::hijack_overlay_renderer() {
+std::optional<std::string> VR::hijack_render_layer(VR::RenderLayerHook<sdk::renderer::RenderLayer>& hook) {
     // We're going to make via.render.layer.Overlay.Draw() return early
     // For some reason this fixes 3D GUI rendering in RE3 in VR
-    auto t = sdk::RETypeDB::get()->find_type("via.render.layer.Overlay");
+    auto t = sdk::find_type_definition(hook.name);
 
     if (t == nullptr) {
-        return "VR init failed: via.render.layer.Overlay type not found.";
+        return std::string{"VR init failed: "} + hook.name + " type not found.";
     }
 
     void* fake_obj = t->create_instance();
 
-    if (fake_obj == nullptr) {
-        return "VR init failed: Failed to create fake via.render.layer.Overlay instance.";
+    if (fake_obj == nullptr) { 
+        return std::string{"VR init failed: "} + "Failed to create fake " + hook.name + " instance.";
     }
 
     auto obj_vtable = *(uintptr_t**)fake_obj;
 
     if (obj_vtable == nullptr) {
-        return "VR init failed: via.render.layer.Overlay vtable not found.";
+        return std::string{"VR init failed: "} + hook.name + " vtable not found.";
     }
 
-    spdlog::info("via.render.layer.Overlay vtable: {:x}", (uintptr_t)obj_vtable - g_framework->get_module());
+    spdlog::info("{:s} vtable: {:x}", hook.name, (uintptr_t)obj_vtable - g_framework->get_module());
 
     auto draw_native = obj_vtable[sdk::renderer::RenderLayer::DRAW_VTABLE_INDEX];
 
     if (draw_native == 0) {
-        return "VR init failed: via.render.layer.Overlay draw native not found.";
+        return std::string{"VR init failed: "} + hook.name + " draw native not found.";
     }
 
-    spdlog::info("via.render.layer.Overlay.Draw: {:x}", (uintptr_t)draw_native);
+    spdlog::info("{:s}.Draw: {:x}", hook.name, (uintptr_t)draw_native);
 
     // Set the first byte to the ret instruction
     //m_overlay_draw_patch = Patch::create(draw_native, { 0xC3 });
 
-    g_overlay_draw_hook = std::make_unique<FunctionHook>(draw_native, overlay_draw_hook);
+    if (!utility::is_stub_code((uint8_t*)draw_native)) {
+        if (!hook.hook_draw(draw_native)) {
+            return std::string{"VR init failed: "} + hook.name + " draw native function hook failed.";
+        }
+    } else {
+        spdlog::info("Skipping draw hook for {:s}, stub code detected", hook.name);
+    }
 
-    if (!g_overlay_draw_hook->create()) {
-        return "VR init failed: via.render.layer.Overlay draw native function hook failed.";
+    auto update_native = obj_vtable[sdk::renderer::RenderLayer::UPDATE_VTABLE_INDEX];
+
+    if (update_native == 0) {
+        return std::string{"VR init failed: "} + hook.name + " update native not found.";
+    }
+
+    spdlog::info("{:s}.Update: {:x}", hook.name, (uintptr_t)update_native);
+
+    if (!utility::is_stub_code((uint8_t*)update_native)) {
+        if (!hook.hook_update(update_native)) {
+            return std::string{"VR init failed: "} + hook.name + " update native function hook failed.";
+        }
+    } else {
+        spdlog::info("Skipping update hook for {:s}, stub code detected", hook.name);
     }
 
     // Hook get_Sharpness
@@ -758,7 +1016,7 @@ std::optional<std::string> VR::hijack_overlay_renderer() {
     }*/
 
     // ASDAFASFF
-    /*t = sdk::RETypeDB::get()->find_type("via.render.layer.PostShadowCast");
+    /*t = sdk::find_type_definition("via.render.layer.PostShadowCast");
 
     if (t == nullptr) {
         return "VR init failed: via.render.layer.PostShadowCast type not found.";
@@ -791,7 +1049,7 @@ std::optional<std::string> VR::hijack_overlay_renderer() {
 }
 
 std::optional<std::string> VR::hijack_wwise_listeners() {
-    const auto t = sdk::RETypeDB::get()->find_type("via.wwise.WwiseListener");
+    const auto t = sdk::find_type_definition("via.wwise.WwiseListener");
 
     if (t == nullptr) {
         return "VR init failed: via.wwise.WwiseListener type not found.";
@@ -1067,7 +1325,7 @@ void VR::update_camera() {
         return;
     }
 
-    static auto via_camera = sdk::RETypeDB::get()->find_type("via.Camera");
+    static auto via_camera = sdk::find_type_definition("via.Camera");
     static auto get_near_clip_plane_method = via_camera->get_method("get_NearClipPlane");
     static auto get_far_clip_plane_method = via_camera->get_method("get_FarClipPlane");
     static auto set_far_clip_plane_method = via_camera->get_method("set_FarClipPlane");
@@ -1091,6 +1349,24 @@ void VR::update_camera() {
 #if defined(RE2) || defined(RE3)
     if (FirstPerson::get()->will_be_used()) {
         m_needs_camera_restore = false;
+
+        auto camera_object = utility::re_component::get_game_object(camera);
+
+        if (camera_object == nullptr || camera_object->transform == nullptr) {
+            return;
+        }
+
+        auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+
+        if (camera_joint == nullptr) {
+            return;
+        }
+
+        m_original_camera_position = sdk::get_joint_position(camera_joint);
+        m_original_camera_rotation = sdk::get_joint_rotation(camera_joint);
+        m_original_camera_matrix = Matrix4x4f{m_original_camera_rotation};
+        m_original_camera_matrix[3] = m_original_camera_position;
+
         return;
     }
 #endif
@@ -1150,6 +1426,8 @@ void VR::update_camera_origin() {
     if (!inside_on_end) {
         m_original_camera_position = sdk::get_joint_position(camera_joint);
         m_original_camera_rotation = sdk::get_joint_rotation(camera_joint);
+        m_original_camera_matrix = Matrix4x4f{m_original_camera_rotation};
+        m_original_camera_matrix[3] = m_original_camera_position;
     }
 
     apply_hmd_transform(camera_joint);
@@ -1349,7 +1627,7 @@ void VR::set_lens_distortion(bool value) {
         return;
     }
 
-    static auto lens_distortion_tdef = sdk::RETypeDB::get()->find_type(game_namespace("LensDistortionController"));
+    static auto lens_distortion_tdef = sdk::find_type_definition(game_namespace("LensDistortionController"));
     static auto lens_distortion_t = lens_distortion_tdef->get_type();
 
     auto lens_distortion_component = utility::re_component::find(camera, lens_distortion_t);
@@ -1372,11 +1650,11 @@ void VR::disable_bad_effects() {
     auto application = sdk::Application::get();
 
     // minor optimizations to prevent hashing and map lookups every frame
-    static auto renderer_t = sdk::RETypeDB::get()->find_type("via.render.Renderer");
+    static auto renderer_t = sdk::find_type_definition("via.render.Renderer");
 
     static auto get_render_config_method = renderer_t->get_method("get_RenderConfig");
 
-    static auto render_config_t = sdk::RETypeDB::get()->find_type("via.render.RenderConfig");
+    static auto render_config_t = sdk::find_type_definition("via.render.RenderConfig");
 
     static auto get_framerate_setting_method = render_config_t->get_method("get_FramerateSetting");
     static auto set_framerate_setting_method = render_config_t->get_method("set_FramerateSetting");
@@ -1401,6 +1679,9 @@ void VR::disable_bad_effects() {
 
     static auto get_colorspace_method = render_config_t->get_method("get_ColorSpace");
     static auto set_colorspace_method = render_config_t->get_method("set_ColorSpace");
+
+    static auto get_dynamic_shadow_enable_method = render_config_t->get_method("get_DynamicShadowEnable");
+    static auto set_dynamic_shadow_enable_method = render_config_t->get_method("set_DynamicShadowEnable");
 
     static auto get_hdrmode_method = renderer_t->get_method("get_HDRMode");
     static auto set_hdrmode_method = renderer_t->get_method("set_HDRMode");
@@ -1530,6 +1811,16 @@ void VR::disable_bad_effects() {
         }
     }
 
+    if (m_force_dynamic_shadows_settings->value() && get_dynamic_shadow_enable_method != nullptr && set_dynamic_shadow_enable_method != nullptr) {
+        const auto is_dynamic_shadow_enabled = get_dynamic_shadow_enable_method->call<bool>(context, render_config);
+
+        // Enable dynamic shadows
+        if (!is_dynamic_shadow_enabled) {
+            set_dynamic_shadow_enable_method->call<void*>(context, render_config, true);
+            spdlog::info("[VR] Dynamic shadows enabled");
+        }
+    }
+
 #ifdef RE7
     auto camera = sdk::get_primary_camera();
 
@@ -1550,7 +1841,7 @@ void VR::disable_bad_effects() {
     }
 
     auto get_type = [](std::string name) {
-        auto tdef = sdk::RETypeDB::get()->find_type(name);
+        auto tdef = sdk::find_type_definition(name);
         return tdef->get_type();
     };
 
@@ -1571,15 +1862,42 @@ void VR::disable_bad_effects() {
 #endif
 }
 
+void VR::fix_temporal_effects() {
+    // this is SO DUMB!!!!!
+    const auto camera = sdk::get_primary_camera();
+
+    if (camera == nullptr) {
+        return;
+    }
+    
+    static auto render_output_type = sdk::find_type_definition("via.render.RenderOutput")->get_type();
+    auto render_output_component = utility::re_component::find(camera, render_output_type);
+
+    if (render_output_component == nullptr) {
+        return;
+    }
+
+    if (!m_is_hmd_active || m_disable_temporal_fix) {
+        sdk::call_object_func_easy<void*>(render_output_component, "set_DistortionType", 0); // None
+        return;
+    }
+
+    if (m_frame_count % 2 == m_left_eye_interval) {
+        sdk::call_object_func_easy<void*>(render_output_component, "set_DistortionType", 1); // left
+    } else {
+        sdk::call_object_func_easy<void*>(render_output_component, "set_DistortionType", 2); // right
+    }
+}
+
 int32_t VR::get_frame_count() const {
     return get_game_frame_count();
 }
 
 int32_t VR::get_game_frame_count() const {
-    static auto renderer_type = sdk::RETypeDB::get()->find_type("via.render.Renderer");
+    static auto renderer_type = sdk::find_type_definition("via.render.Renderer");
 
     if (renderer_type == nullptr) {
-        renderer_type = sdk::RETypeDB::get()->find_type("via.render.Renderer");
+        renderer_type = sdk::find_type_definition("via.render.Renderer");
         spdlog::warn("VR: Failed to find renderer type, trying again next time");
         return 0;
     }
@@ -1626,8 +1944,9 @@ void VR::set_rotation_offset(const glm::quat& offset) {
 }
 
 void VR::recenter_view() {
-    set_rotation_offset(glm::inverse(get_rotation(0)));
-    set_rotation_offset(glm::quat{utility::math::remove_y_component(Matrix4x4f{m_rotation_offset})});
+    const auto new_rotation_offset = glm::normalize(glm::inverse(utility::math::flatten(glm::quat{get_rotation(0)})));
+
+    set_rotation_offset(new_rotation_offset);
 }
 
 glm::quat VR::get_gui_rotation_offset() {
@@ -1643,8 +1962,8 @@ void VR::set_gui_rotation_offset(const glm::quat& offset) {
 }
 
 void VR::recenter_gui(const glm::quat& from) {
-    set_gui_rotation_offset(glm::inverse(from));
-    set_gui_rotation_offset(glm::quat{utility::math::remove_y_component(Matrix4x4f{m_gui_rotation_offset})});
+    const auto new_gui_offset = glm::normalize(glm::inverse(utility::math::flatten(from)));
+    set_gui_rotation_offset(new_gui_offset);
 }
 
 Vector4f VR::get_current_offset() {
@@ -1731,7 +2050,6 @@ void VR::on_present() {
         return;
     }
 
-    m_main_view = sdk::get_main_view();
     m_submitted = false;
 
     const auto renderer = g_framework->get_renderer_type();
@@ -1744,6 +2062,7 @@ void VR::on_present() {
     if (renderer == REFramework::RendererType::D3D11) {
         e = m_d3d11.on_frame(this);
     } else if (renderer == REFramework::RendererType::D3D12) {
+        m_is_d3d12 = true;
         e = m_d3d12.on_frame(this);
     }
 
@@ -1858,6 +2177,12 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
         case "sm42_020_keystrokeDevice01A_gimmick"_fnv: // this one is the keypad in the locker room...
             return true;
 
+#if defined(RE2) || defined(RE3)
+        // the weird buggy overlay in the inventory
+        case "GuiBack"_fnv:
+            return false;
+#endif
+
         default:
             break;
         };
@@ -1882,6 +2207,19 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
         }
 #endif
 
+#ifdef RE7
+        if (name_hash == "HUD"_fnv) { // not a hero
+            game_object->transform->worldTransform = Matrix4x4f{ 
+                3.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 3.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 3.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f
+            };
+
+            return true;
+        }
+#endif
+
         //spdlog::info("VR: on_pre_gui_draw_element: {}", name);
         //spdlog::info("VR: on_pre_gui_draw_element: {} {:x}", name, (uintptr_t)game_object);
 
@@ -1894,7 +2232,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 static sdk::RETypeDefinition* via_render_mesh_typedef = nullptr;
 
                 if (via_render_mesh_typedef == nullptr) {
-                    via_render_mesh_typedef = sdk::RETypeDB::get()->find_type("via.render.Mesh");
+                    via_render_mesh_typedef = sdk::find_type_definition("via.render.Mesh");
 
                     // wait
                     if (via_render_mesh_typedef == nullptr) {
@@ -1908,6 +2246,9 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 if (utility::re_component::find(game_object->transform, via_render_mesh_typedef->get_type()) != nullptr) {
                     return true;
                 }
+
+                auto ui_scale = m_ui_scale_option->value();
+                const auto world_ui_scale = m_world_ui_scale_option->value();
 
                 auto& restore_data = g_elements_to_reset.emplace_back(std::make_unique<GUIRestoreData>());
                 auto original_game_object_pos = sdk::get_transform_position(game_object->transform);
@@ -1955,7 +2296,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                                                     std::optional<float> custom_ui_scale = std::nullopt)
                         {
                             if (!custom_ui_scale) {
-                                custom_ui_scale = m_ui_scale;
+                                custom_ui_scale = world_ui_scale;
                             }
 
                             auto delta = target_position - m_render_camera_matrix[3];
@@ -1988,7 +2329,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             sdk::call_object_func<void*>(view, "get_ScreenSize", &gui_size, context, view);
                             
                             auto fix_transform_object = [&](::REManagedObject* object) {
-                                static auto transform_object_type = sdk::RETypeDB::get()->find_type("via.gui.TransformObject");
+                                static auto transform_object_type = sdk::find_type_definition("via.gui.TransformObject");
 
                                 if (object == nullptr) {
                                     return;
@@ -2007,29 +2348,84 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                                     sdk::call_object_func<void*>(object, "set_Position", context, object, &half_size);
                                 }
 
-                                Vector4f new_scale{ scale, scale, scale, 1.0f };
+                                //Vector4f new_scale{ scale, scale, scale, 1.0f };
+                                const auto old_scale = sdk::call_object_func_easy<Vector4f>(object, "get_Scale");
+                                Vector4f new_scale{ old_scale.y, old_scale.y, old_scale.z, 1.0f };
                                 sdk::call_object_func<void*>(object, "set_Scale", context, object, &new_scale);
                             };
 
                             for (auto c = child; c != nullptr; c = sdk::call_object_func<REManagedObject*>(c, "get_Next", context, c)) {
                                 fix_transform_object(c);
                             }
+
+                            gui_matrix = glm::scale(gui_matrix, Vector3f{ scale, scale, scale });
                         };
 
                         auto camera_transform = camera_object->transform;
 
-                        const auto& camera_matrix = utility::re_transform::get_joint_matrix_by_index(*camera_transform, 0);
+                        const auto& camera_matrix = m_original_camera_matrix;
                         const auto& camera_position = camera_matrix[3];
 
                         glm::quat wanted_rotation{};
                         
-                        float ui_distance_from_camera = m_ui_scale;
-                        bool wants_fix_2d_pos = false;
-                        bool wants_screen_correction = true;
+                        bool wants_face_glue = false;
+                        auto ui_distance = m_ui_distance_option->value();
 
-                        if (name_hash == "damage_ui2102"_fnv) {
-                            ui_distance_from_camera = 5.0f;
-                            wants_screen_correction = false;
+                        switch (name_hash) {
+                        case "damage_ui2102"_fnv:
+                        case "NightVision_Filter"_fnv:
+                            wants_face_glue = true;
+                            break;
+                        default:
+                            break;
+                        };
+
+                        float right_world_adjust{};
+
+                        switch (name_hash) {
+                        case "GuiFront"_fnv:
+                        case "GUI_Pause"_fnv:
+                        case "GUIPause"_fnv:
+                        case "GUIMapBg"_fnv:
+                        case "BG"_fnv:
+                            ui_distance += 0.1f; // give everything a little pop in the inventory.
+                            break;
+                        case "GUI_MapBG"_fnv:
+                        case "GUI_Map"_fnv:
+                        case "GUI_MapGrid"_fnv:
+                        case "GUIMap"_fnv:
+                        case "GUIMapIcon"_fnv:
+                            ui_distance -= 0.025f; // give everything a little pop in the inventory.
+                            break;
+                        case "GuiCaption"_fnv:
+                        case "GUIInventory"_fnv:
+                        case "GUIInventoryCraft"_fnv:
+                        case "GUIInventoryKeyItem"_fnv:
+                        case "GUIInventoryTreasure"_fnv:
+                        case "GUIBinder"_fnv:
+                        case "GUIEquip"_fnv:
+                            ui_distance -= 0.1f; // give everything a little pop in the inventory.
+                            break;
+                        case "GUI_RemainingBullet"_fnv:
+                            right_world_adjust = 0.15f;
+                            break;
+                        case "GUI_Reticle"_fnv:
+                        case "ReticleGUI"_fnv:
+                        case "GUIReticle"_fnv:
+                            ui_distance = 5.0f;
+                            ui_scale = 2.0f;
+                            break;
+                        default:
+                            break;
+                        }
+
+                        if (ui_distance < 0.0f) {
+                            ui_distance = 0.0f;
+                        }
+
+                        // glues the GUI to the camera rotation and position
+                        if (wants_face_glue) {
+                            ui_distance = 5.0f;
 
                             wanted_rotation = glm::extractMatrixRotation(m_render_camera_matrix) * Matrix4x4f{
                                 -1, 0, 0, 0,
@@ -2047,24 +2443,44 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                                 0, 0, 0, 1
                             };
 
+                            if (m_decoupled_pitch->value()) {
+                                bool is_exception = false;
+
+                                switch (name_hash) {
+                                    case "GUIReticle"_fnv:[[fallthrough]];
+                                    case "ReticleGUI"_fnv:[[fallthrough]];
+                                    case "GUI_Reticle"_fnv:
+                                        is_exception = true;
+                                        break;
+                                    default:
+                                        break;
+                                }
+
+                                if (!is_exception) {
+                                    wanted_rotation = utility::math::flatten(wanted_rotation);
+                                }
+                            }
+
                             wanted_rotation = gui_rotation_offset * wanted_rotation;
                         }
 
                         const auto wanted_rotation_mat = Matrix4x4f{wanted_rotation};
-                        gui_matrix = wanted_rotation_mat;
 
-                        gui_matrix[3] = camera_position + (wanted_rotation_mat[2] * ui_distance_from_camera);
+                        gui_matrix = wanted_rotation_mat;
+                        gui_matrix[3] = camera_position + (wanted_rotation_mat[2] * ui_distance) + (wanted_rotation_mat[0] * right_world_adjust);
                         gui_matrix[3].w = 1.0f;
 
-                        if (wants_fix_2d_pos) {
-                            fix_2d_position(gui_matrix[3], wants_screen_correction, ui_distance_from_camera);
+                        // Scales the GUI so it's not massive.
+                        if (!wants_face_glue) {
+                            const auto scale = 1.0f / ui_scale;
+                            gui_matrix = glm::scale(gui_matrix, Vector3f{ scale, scale, scale });
                         }
 
-                        static auto gui_driver_typedef = sdk::RETypeDB::get()->find_type(game_namespace("GUIDriver"));
-                        static auto mhrise_npc_head_message_typedef = sdk::RETypeDB::get()->find_type(game_namespace("gui.GuiCommonNpcHeadMessage"));
-                        static auto mhrise_speech_balloon_typedef = sdk::RETypeDB::get()->find_type(game_namespace("gui.GuiCommonNpcSpeechBalloon"));
-                        static auto mhrise_head_message_typedef = sdk::RETypeDB::get()->find_type(game_namespace("gui.GuiCommonHeadMessage"));
-                        static auto mhrise_otomo_head_message_typedef = sdk::RETypeDB::get()->find_type(game_namespace("gui.GuiCommonOtomoHeadMessage"));
+                        static auto gui_driver_typedef = sdk::find_type_definition(game_namespace("GUIDriver"));
+                        static auto mhrise_npc_head_message_typedef = sdk::find_type_definition(game_namespace("gui.GuiCommonNpcHeadMessage"));
+                        static auto mhrise_speech_balloon_typedef = sdk::find_type_definition(game_namespace("gui.GuiCommonNpcSpeechBalloon"));
+                        static auto mhrise_head_message_typedef = sdk::find_type_definition(game_namespace("gui.GuiCommonHeadMessage"));
+                        static auto mhrise_otomo_head_message_typedef = sdk::find_type_definition(game_namespace("gui.GuiCommonOtomoHeadMessage"));
 
                         static auto gameobject_elements_list = {
                             mhrise_npc_head_message_typedef,
@@ -2155,7 +2571,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                         // ... RE7
                         if (child != nullptr && utility::re_managed_object::get_field<wchar_t*>(child, "Name") == std::wstring_view(L"c_interact")) {
-                            static auto ui_world_pos_attach_typedef = sdk::RETypeDB::get()->find_type("app.UIWorldPosAttach");
+                            static auto ui_world_pos_attach_typedef = sdk::find_type_definition("app.UIWorldPosAttach");
                             auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
 
                             // Fix the world position of the gui element
@@ -2227,7 +2643,7 @@ void VR::on_pre_update_before_lock_scene(void* ctx) {
 void VR::on_pre_lightshaft_draw(void* shaft, void* render_context) {
     m_in_lightshaft = true;
 
-    /*static auto transparent_layer_t = sdk::RETypeDB::get()->find_type("via.render.layer.Transparent");
+    /*static auto transparent_layer_t = sdk::find_type_definition("via.render.layer.Transparent");
     auto transparent_layer = sdk::renderer::find_layer(transparent_layer_t->type);
 
     spdlog::info("transparent layer: {:x}", (uintptr_t)transparent_layer);
@@ -2236,7 +2652,7 @@ void VR::on_pre_lightshaft_draw(void* shaft, void* render_context) {
         return;
     }
 
-    static auto scene_layer_t = sdk::RETypeDB::get()->find_type("via.render.layer.Scene");
+    static auto scene_layer_t = sdk::find_type_definition("via.render.layer.Scene");
     auto scene_layer = transparent_layer->find_parent(scene_layer_t->type);
 
     spdlog::info("scene layer: {:x}", (uintptr_t)scene_layer);
@@ -2265,7 +2681,7 @@ void VR::on_pre_begin_rendering(void* entry) {
 
     // Use the gamepad/motion controller sticks to lerp the standing origin back to the center
     if (m_via_hid_gamepad.update()) {
-        auto pad = sdk::call_object_func<REManagedObject*>(m_via_hid_gamepad.object, m_via_hid_gamepad.t, "get_LastInputDevice", sdk::get_thread_context(), m_via_hid_gamepad.object);
+        auto pad = sdk::call_native_func_easy<REManagedObject*>(m_via_hid_gamepad.object, m_via_hid_gamepad.t, "get_LastInputDevice");
 
         if (pad != nullptr) {
             // Move direction
@@ -2344,6 +2760,7 @@ void VR::on_pre_begin_rendering(void* entry) {
 
     // update our internally stored render matrix
     update_render_matrix();
+    //fix_temporal_effects(); // BAD way to do it!
 }
 
 void VR::on_begin_rendering(void* entry) {
@@ -2386,7 +2803,7 @@ void VR::on_end_rendering(void* entry) {
         // Try to render again for the right eye
         auto app = sdk::Application::get();
 
-        static auto app_type = sdk::RETypeDB::get()->find_type("via.Application");
+        static auto app_type = sdk::find_type_definition("via.Application");
         static auto set_max_delta_time_fn = app_type->get_method("set_MaxDeltaTime");
 
         // RE8 and onwards...
@@ -2435,6 +2852,7 @@ void VR::on_end_rendering(void* entry) {
         static auto update_effect = app->get_function("UpdateEffect");
         static auto end_update_effect = app->get_function("EndUpdateEffect");
         static auto prerender_gui = app->get_function("PrerenderGUI");
+        static auto begin_update_primitive = app->get_function("BeginUpdatePrimitive");
 
         // SO. Let me explain what's happening here.
         // If we try and just render a frame in this naive way in this order:
@@ -2449,6 +2867,10 @@ void VR::on_end_rendering(void* entry) {
         // So, we manually call BeginEffect, and then EndUpdateEffect
         // Which somehow solves the crash.
         // We don't call UpdateEffect because it will make effects appear to run at a higher framerate
+        if (begin_update_primitive != nullptr) {
+            begin_update_primitive->func(begin_update_primitive->entry);
+        }
+
         if (begin_update_effect != nullptr) {
             begin_update_effect->func(begin_update_effect->entry);
         }
@@ -2583,7 +3005,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
         return;
     }
 
-    static auto gui_master_type = sdk::RETypeDB::get()->find_type(game_namespace("gui.GUIMaster"));
+    static auto gui_master_type = sdk::find_type_definition(game_namespace("gui.GUIMaster"));
     static auto gui_master_get_instance = gui_master_type->get_method("get_Instance");
     static auto gui_master_get_input = gui_master_type->get_method("get_Input");
     static auto gui_master_input_type = gui_master_get_input->get_return_type();
@@ -2676,6 +3098,12 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     m_was_firstperson_toggle_down = is_firstperson_toggle_down;
 #endif
 
+#if defined(RE2) || defined(RE3)
+    const auto is_gripping_weapon = FirstPerson::get()->was_gripping_weapon();
+#else
+    const auto is_gripping_weapon = false;
+#endif
+
     // Current actual button bits used by the game
     auto& button_bits_down = *sdk::get_object_field<uint64_t>(button_bits_obj, "Down");
     auto& button_bits_on = *sdk::get_object_field<uint64_t>(button_bits_obj, "On");
@@ -2743,7 +3171,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     set_button_state(app::ropeway::InputDefine::Kind::UI_SHIFT_RIGHT, is_grip_down);
 
     // Left Grip: Alternate aim (grenades, knives, etc), UI left (LB)
-    set_button_state(app::ropeway::InputDefine::Kind::SUPPORT_HOLD, is_left_grip_down);
+    set_button_state(app::ropeway::InputDefine::Kind::SUPPORT_HOLD, is_left_grip_down && !is_gripping_weapon);   
     set_button_state(app::ropeway::InputDefine::Kind::UI_SHIFT_LEFT, is_left_grip_down);
 
     // Right Trigger (RB): Attack, Alternate UI right (RT), GE_RTrigBottom (quick time event), GE_RTrigTop (another quick time event)
@@ -2949,6 +3377,33 @@ void VR::openvr_input_to_re_engine() {
         }
     }
 #endif
+
+#ifdef RE8
+    if (m_handle_pause) {
+        auto gui_manager = sdk::get_managed_singleton<::REManagedObject>("app.GUIManager");
+
+        if (gui_manager != nullptr) {
+            constexpr uint32_t PAUSE_ALIAS = 0x7DEE1056;
+            const auto gui_handle = sdk::call_object_func<::REManagedObject*>(gui_manager, "findGUI(System.UInt32)", sdk::get_thread_context(), gui_manager, PAUSE_ALIAS);
+
+            if (gui_handle != nullptr) {
+                auto driver = sdk::call_object_func<::REManagedObject*>(gui_handle, "get_driver", sdk::get_thread_context(), gui_handle);
+
+                if (driver != nullptr) {
+                    const auto fake_param = sdk::create_instance("app.GUIRequest.Parameter");
+
+                    if (fake_param != nullptr) {
+                        sdk::call_object_func<void*>(driver, "show", sdk::get_thread_context(), driver, fake_param);
+                    } else {
+                        spdlog::error("Failed to create fake app.GUIRequest.Parameter, cannot pause!");
+                    }
+                }
+            }
+        }
+
+        m_handle_pause = false;
+    }
+#endif
 }
 
 void VR::on_draw_ui() {
@@ -3026,7 +3481,10 @@ void VR::on_draw_ui() {
     m_motion_controls_inactivity_timer->draw("Inactivity Timer");
     m_joystick_deadzone->draw("Joystick Deadzone");
 
-    ImGui::DragFloat("UI Scale", &m_ui_scale, 0.005f, 0.0f, 100.0f);
+    m_ui_scale_option->draw("2D UI Scale");
+    m_ui_distance_option->draw("2D UI Distance");
+    m_world_ui_scale_option->draw("World-Space UI Scale");
+
     ImGui::DragFloat3("Overlay Rotation", (float*)&m_overlay_rotation, 0.01f, -360.0f, 360.0f);
     ImGui::DragFloat3("Overlay Position", (float*)&m_overlay_position, 0.01f, -100.0f, 100.0f);
 
@@ -3040,11 +3498,17 @@ void VR::on_draw_ui() {
     m_force_lensdistortion_settings->draw("Force Disable Lens Distortion");
     m_force_volumetrics_settings->draw("Force Disable Volumetrics");
     m_force_lensflares_settings->draw("Force Disable Lens Flares");
+    m_force_dynamic_shadows_settings->draw("Force Enable Dynamic Shadows");
+    m_allow_engine_overlays->draw("Allow Engine Overlays");
 
     ImGui::Separator();
     ImGui::Text("Debug info");
     ImGui::Checkbox("Disable Projection Matrix Override", &m_disable_projection_matrix_override);
+    ImGui::Checkbox("Disable GUI Projection Matrix Override", &m_disable_gui_camera_projection_matrix_override);
     ImGui::Checkbox("Disable View Matrix Override", &m_disable_view_matrix_override);
+    ImGui::Checkbox("Disable Backbuffer Size Override", &m_disable_backbuffer_size_override);
+    ImGui::Checkbox("Disable Temporal Fix", &m_disable_temporal_fix);
+    ImGui::Checkbox("Disable Post Effect Fix", &m_disable_post_effect_fix);
 
     ImGui::DragFloat4("Raw Left", (float*)&m_raw_projections[0], 0.01f, -100.0f, 100.0f);
     ImGui::DragFloat4("Raw Right", (float*)&m_raw_projections[1], 0.01f, -100.0f, 100.0f);
@@ -3057,6 +3521,7 @@ void VR::on_draw_ui() {
 
 void VR::on_device_reset() {
     spdlog::info("VR: on_device_reset");
+    m_backbuffer_inconsistency = false;
     m_d3d11.on_reset(this);
     m_d3d12.on_reset(this);
     m_overlay_component.on_reset();
@@ -3220,4 +3685,12 @@ Vector2f VR::get_left_stick_axis() const {
 
 Vector2f VR::get_right_stick_axis() const {
     return get_joystick_axis(m_right_joystick);
+}
+
+void VR::trigger_haptic_vibration(float seconds_from_now, float duration, float frequency, float amplitude, vr::VRInputValueHandle_t source) {
+    if (!m_openvr_loaded || !is_using_controllers()) {
+        return;
+    }
+
+    vr::VRInput()->TriggerHapticVibrationAction(m_action_haptic, seconds_from_now, duration, frequency, amplitude, source);
 }

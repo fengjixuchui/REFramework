@@ -29,288 +29,681 @@ endif()
 
 # Options
 option(DEVELOPER_MODE "Enable developer mode" ON)
+option(REF_BUILD_RE2_SDK OFF)
+option(REF_BUILD_RE3_SDK OFF)
+option(REF_BUILD_RE7_SDK OFF)
+option(REF_BUILD_RE8_SDK OFF)
+option(REF_BUILD_DMC5_SDK OFF)
+option(REF_BUILD_MHRISE_SDK OFF)
+option(REF_BUILD_FRAMEWORK "Enable building the full REFramework" ON)
+option(REF_BUILD_DEPENDENCIES "Enable building dependencies" ON)
 
 project(reframework)
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
 
 # Disable exceptions
 # string(REGEX REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-# Statically compile runtime
-string(REGEX REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-string(REGEX REPLACE "/MD" "/MT" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+set(ASMJIT_STATIC ON CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+
+
+if ("${CMAKE_BUILD_TYPE}" MATCHES "Release")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MT")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MT")
+
+    # Statically compile runtime
+    string(REGEX REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REGEX REPLACE "/MD" "/MT" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+    string(REGEX REPLACE "/MD" "/MT" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REGEX REPLACE "/MD" "/MT" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+    message(NOTICE "Building in Release mode")
+endif()
 
 include(FetchContent)
 
-message(STATUS "Fetching xbyak (v6.00)...")
+message(STATUS "Fetching asmjit (2a706fd2ba355808cada31ac1eed8ce28caa6b37)...")
 FetchContent_Declare(
-	xbyak
+	asmjit
 	GIT_REPOSITORY
-		https://github.com/herumi/xbyak.git
+		https://github.com/asmjit/asmjit.git
 	GIT_TAG
-		v6.00
+		2a706fd2ba355808cada31ac1eed8ce28caa6b37
 )
-FetchContent_MakeAvailable(xbyak)
+FetchContent_MakeAvailable(asmjit)
+
+message(STATUS "Fetching zydis (3f5a3ad8e16658c62d7033e9373232d19480d3cc)...")
+FetchContent_Declare(
+	zydis
+	GIT_REPOSITORY
+		https://github.com/zyantific/zydis
+	GIT_TAG
+		3f5a3ad8e16658c62d7033e9373232d19480d3cc
+)
+FetchContent_MakeAvailable(zydis)
 
 # Target spdlog
-set(CMKR_TARGET spdlog)
-set(spdlog_SOURCES "")
+if(REF_BUILD_DEPENDENCIES AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework-dependencies
+	set(CMKR_TARGET spdlog)
+	set(spdlog_SOURCES "")
 
-list(APPEND spdlog_SOURCES
-	"dependencies/spdlog/src/async.cpp"
-	"dependencies/spdlog/src/cfg.cpp"
-	"dependencies/spdlog/src/color_sinks.cpp"
-	"dependencies/spdlog/src/file_sinks.cpp"
-	"dependencies/spdlog/src/fmt.cpp"
-	"dependencies/spdlog/src/spdlog.cpp"
-	"dependencies/spdlog/src/stdout_sinks.cpp"
-)
+	list(APPEND spdlog_SOURCES
+		"dependencies/spdlog/src/async.cpp"
+		"dependencies/spdlog/src/cfg.cpp"
+		"dependencies/spdlog/src/color_sinks.cpp"
+		"dependencies/spdlog/src/file_sinks.cpp"
+		"dependencies/spdlog/src/fmt.cpp"
+		"dependencies/spdlog/src/spdlog.cpp"
+		"dependencies/spdlog/src/stdout_sinks.cpp"
+	)
 
-list(APPEND spdlog_SOURCES
-	cmake.toml
-)
+	list(APPEND spdlog_SOURCES
+		cmake.toml
+	)
 
-set(CMKR_SOURCES ${spdlog_SOURCES})
-add_library(spdlog STATIC)
+	set(CMKR_SOURCES ${spdlog_SOURCES})
+	add_library(spdlog STATIC)
 
-if(spdlog_SOURCES)
-	target_sources(spdlog PRIVATE ${spdlog_SOURCES})
+	if(spdlog_SOURCES)
+		target_sources(spdlog PRIVATE ${spdlog_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${spdlog_SOURCES})
+
+	target_compile_definitions(spdlog PUBLIC
+		SPDLOG_COMPILED_LIB
+	)
+
+	target_include_directories(spdlog PUBLIC
+		"dependencies/spdlog/include"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
-
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${spdlog_SOURCES})
-
-target_compile_definitions(spdlog PUBLIC
-	SPDLOG_COMPILED_LIB
-)
-
-target_include_directories(spdlog PUBLIC
-	"dependencies/spdlog/include"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
 
 # Target glm_static
-set(CMKR_TARGET glm_static)
-set(glm_static_SOURCES "")
+if(REF_BUILD_DEPENDENCIES AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework-dependencies
+	set(CMKR_TARGET glm_static)
+	set(glm_static_SOURCES "")
 
-list(APPEND glm_static_SOURCES
-	"dependencies/glm/glm/detail/glm.cpp"
-)
+	list(APPEND glm_static_SOURCES
+		"dependencies/glm/glm/detail/glm.cpp"
+	)
 
-list(APPEND glm_static_SOURCES
-	cmake.toml
-)
+	list(APPEND glm_static_SOURCES
+		cmake.toml
+	)
 
-set(CMKR_SOURCES ${glm_static_SOURCES})
-add_library(glm_static STATIC)
+	set(CMKR_SOURCES ${glm_static_SOURCES})
+	add_library(glm_static STATIC)
 
-if(glm_static_SOURCES)
-	target_sources(glm_static PRIVATE ${glm_static_SOURCES})
+	if(glm_static_SOURCES)
+		target_sources(glm_static PRIVATE ${glm_static_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${glm_static_SOURCES})
+
+	target_include_directories(glm_static PUBLIC
+		"dependencies/glm"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
-
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${glm_static_SOURCES})
-
-target_include_directories(glm_static PUBLIC
-	"dependencies/glm"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
 
 # Target minhook
-set(CMKR_TARGET minhook)
-set(minhook_SOURCES "")
+if(REF_BUILD_DEPENDENCIES AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework-dependencies
+	set(CMKR_TARGET minhook)
+	set(minhook_SOURCES "")
 
-list(APPEND minhook_SOURCES
-	"dependencies/minhook/src/buffer.c"
-	"dependencies/minhook/src/hde/hde32.c"
-	"dependencies/minhook/src/hde/hde64.c"
-	"dependencies/minhook/src/hook.c"
-	"dependencies/minhook/src/trampoline.c"
-)
+	list(APPEND minhook_SOURCES
+		"dependencies/minhook/src/buffer.c"
+		"dependencies/minhook/src/hde/hde32.c"
+		"dependencies/minhook/src/hde/hde64.c"
+		"dependencies/minhook/src/hook.c"
+		"dependencies/minhook/src/trampoline.c"
+	)
 
-list(APPEND minhook_SOURCES
-	cmake.toml
-)
+	list(APPEND minhook_SOURCES
+		cmake.toml
+	)
 
-set(CMKR_SOURCES ${minhook_SOURCES})
-add_library(minhook STATIC)
+	set(CMKR_SOURCES ${minhook_SOURCES})
+	add_library(minhook STATIC)
 
-if(minhook_SOURCES)
-	target_sources(minhook PRIVATE ${minhook_SOURCES})
+	if(minhook_SOURCES)
+		target_sources(minhook PRIVATE ${minhook_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${minhook_SOURCES})
+
+	target_include_directories(minhook PUBLIC
+		"dependencies/minhook/include"
+		"dependencies/minhook/src/hde"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
-
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${minhook_SOURCES})
-
-target_include_directories(minhook PUBLIC
-	"dependencies/minhook/include"
-	"dependencies/minhook/src/hde"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
 
 # Target imgui
-set(CMKR_TARGET imgui)
-set(imgui_SOURCES "")
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET imgui)
+	set(imgui_SOURCES "")
 
-list(APPEND imgui_SOURCES
-	"dependencies/imgui/imgui.cpp"
-	"dependencies/imgui/imgui_demo.cpp"
-	"dependencies/imgui/imgui_draw.cpp"
-	"dependencies/imgui/imgui_tables.cpp"
-	"dependencies/imgui/imgui_widgets.cpp"
-)
+	list(APPEND imgui_SOURCES
+		"dependencies/imgui/imgui.cpp"
+		"dependencies/imgui/imgui_demo.cpp"
+		"dependencies/imgui/imgui_draw.cpp"
+		"dependencies/imgui/imgui_tables.cpp"
+		"dependencies/imgui/imgui_widgets.cpp"
+	)
 
-list(APPEND imgui_SOURCES
-	cmake.toml
-)
+	list(APPEND imgui_SOURCES
+		cmake.toml
+	)
 
-set(CMKR_SOURCES ${imgui_SOURCES})
-add_library(imgui STATIC)
+	set(CMKR_SOURCES ${imgui_SOURCES})
+	add_library(imgui STATIC)
 
-if(imgui_SOURCES)
-	target_sources(imgui PRIVATE ${imgui_SOURCES})
+	if(imgui_SOURCES)
+		target_sources(imgui PRIVATE ${imgui_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${imgui_SOURCES})
+
+	target_compile_definitions(imgui PUBLIC
+		"IMGUI_USER_CONFIG=\"${CMAKE_SOURCE_DIR}/src/re2-imgui/re2_imconfig.hpp\""
+	)
+
+	target_include_directories(imgui PUBLIC
+		"dependencies/imgui"
+		"src/re2-imgui"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
-
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${imgui_SOURCES})
-
-target_compile_definitions(imgui PUBLIC
-	"IMGUI_USER_CONFIG=\"${CMAKE_SOURCE_DIR}/src/re2-imgui/re2_imconfig.hpp\""
-)
-
-target_include_directories(imgui PUBLIC
-	"dependencies/imgui"
-	"src/re2-imgui"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
 
 # Target openvr
-set(CMKR_TARGET openvr)
-set(openvr_SOURCES "")
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET openvr)
+	set(openvr_SOURCES "")
 
-set(CMKR_SOURCES ${openvr_SOURCES})
-add_library(openvr INTERFACE)
+	set(CMKR_SOURCES ${openvr_SOURCES})
+	add_library(openvr INTERFACE)
 
-if(openvr_SOURCES)
-	target_sources(openvr INTERFACE ${openvr_SOURCES})
+	if(openvr_SOURCES)
+		target_sources(openvr INTERFACE ${openvr_SOURCES})
+	endif()
+
+	target_include_directories(openvr INTERFACE
+		"dependencies/openvr/headers"
+	)
+
+	target_link_libraries(openvr INTERFACE
+		"${CMAKE_SOURCE_DIR}/dependencies/openvr/lib/win64/openvr_api.lib"
+	)
+
+	file(COPY dependencies/openvr/lib/win64/openvr_api.lib DESTINATION ${CMAKE_BINARY_DIR}/lib)
+	file(COPY dependencies/openvr/bin/win64/openvr_api.dll DESTINATION ${CMAKE_BINARY_DIR}/bin)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
 
-target_include_directories(openvr INTERFACE
-	"dependencies/openvr/headers"
-)
-
-target_link_libraries(openvr INTERFACE
-	"${CMAKE_SOURCE_DIR}/dependencies/openvr/lib/win64/openvr_api.lib"
-)
-
-file(COPY dependencies/openvr/lib/win64/openvr_api.lib DESTINATION ${CMAKE_BINARY_DIR}/lib)
-file(COPY dependencies/openvr/bin/win64/openvr_api.dll DESTINATION ${CMAKE_BINARY_DIR}/bin)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
-
 # Target lua
-set(CMKR_TARGET lua)
-set(lua_SOURCES "")
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET lua)
+	set(lua_SOURCES "")
 
-list(APPEND lua_SOURCES
-	"dependencies/lua/src/lapi.c"
-	"dependencies/lua/src/lauxlib.c"
-	"dependencies/lua/src/lbaselib.c"
-	"dependencies/lua/src/lcode.c"
-	"dependencies/lua/src/lcorolib.c"
-	"dependencies/lua/src/lctype.c"
-	"dependencies/lua/src/ldblib.c"
-	"dependencies/lua/src/ldebug.c"
-	"dependencies/lua/src/ldo.c"
-	"dependencies/lua/src/ldump.c"
-	"dependencies/lua/src/lfunc.c"
-	"dependencies/lua/src/lgc.c"
-	"dependencies/lua/src/linit.c"
-	"dependencies/lua/src/liolib.c"
-	"dependencies/lua/src/llex.c"
-	"dependencies/lua/src/lmathlib.c"
-	"dependencies/lua/src/lmem.c"
-	"dependencies/lua/src/loadlib.c"
-	"dependencies/lua/src/lobject.c"
-	"dependencies/lua/src/lopcodes.c"
-	"dependencies/lua/src/loslib.c"
-	"dependencies/lua/src/lparser.c"
-	"dependencies/lua/src/lstate.c"
-	"dependencies/lua/src/lstring.c"
-	"dependencies/lua/src/lstrlib.c"
-	"dependencies/lua/src/ltable.c"
-	"dependencies/lua/src/ltablib.c"
-	"dependencies/lua/src/ltm.c"
-	"dependencies/lua/src/lundump.c"
-	"dependencies/lua/src/lutf8lib.c"
-	"dependencies/lua/src/lvm.c"
-	"dependencies/lua/src/lzio.c"
+	list(APPEND lua_SOURCES
+		"dependencies/lua/src/lapi.c"
+		"dependencies/lua/src/lauxlib.c"
+		"dependencies/lua/src/lbaselib.c"
+		"dependencies/lua/src/lcode.c"
+		"dependencies/lua/src/lcorolib.c"
+		"dependencies/lua/src/lctype.c"
+		"dependencies/lua/src/ldblib.c"
+		"dependencies/lua/src/ldebug.c"
+		"dependencies/lua/src/ldo.c"
+		"dependencies/lua/src/ldump.c"
+		"dependencies/lua/src/lfunc.c"
+		"dependencies/lua/src/lgc.c"
+		"dependencies/lua/src/linit.c"
+		"dependencies/lua/src/liolib.c"
+		"dependencies/lua/src/llex.c"
+		"dependencies/lua/src/lmathlib.c"
+		"dependencies/lua/src/lmem.c"
+		"dependencies/lua/src/loadlib.c"
+		"dependencies/lua/src/lobject.c"
+		"dependencies/lua/src/lopcodes.c"
+		"dependencies/lua/src/loslib.c"
+		"dependencies/lua/src/lparser.c"
+		"dependencies/lua/src/lstate.c"
+		"dependencies/lua/src/lstring.c"
+		"dependencies/lua/src/lstrlib.c"
+		"dependencies/lua/src/ltable.c"
+		"dependencies/lua/src/ltablib.c"
+		"dependencies/lua/src/ltm.c"
+		"dependencies/lua/src/lundump.c"
+		"dependencies/lua/src/lutf8lib.c"
+		"dependencies/lua/src/lvm.c"
+		"dependencies/lua/src/lzio.c"
+	)
+
+	list(APPEND lua_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${lua_SOURCES})
+	add_library(lua STATIC)
+
+	if(lua_SOURCES)
+		target_sources(lua PRIVATE ${lua_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lua_SOURCES})
+
+	target_include_directories(lua PUBLIC
+		"dependencies/lua/src"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target sol2
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET sol2)
+	set(sol2_SOURCES "")
+
+	set(CMKR_SOURCES ${sol2_SOURCES})
+	add_library(sol2 INTERFACE)
+
+	if(sol2_SOURCES)
+		target_sources(sol2 INTERFACE ${sol2_SOURCES})
+	endif()
+
+	target_include_directories(sol2 INTERFACE
+		"dependencies/sol2/single/include"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target nlohmann_json
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET nlohmann_json)
+	set(nlohmann_json_SOURCES "")
+
+	set(CMKR_SOURCES ${nlohmann_json_SOURCES})
+	add_library(nlohmann_json INTERFACE)
+
+	if(nlohmann_json_SOURCES)
+		target_sources(nlohmann_json INTERFACE ${nlohmann_json_SOURCES})
+	endif()
+
+	target_include_directories(nlohmann_json INTERFACE
+		"dependencies/nlohmann"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target utility
+set(CMKR_TARGET utility)
+set(utility_SOURCES "")
+
+list(APPEND utility_SOURCES
+	"shared/utility/Address.cpp"
+	"shared/utility/Config.cpp"
+	"shared/utility/FunctionHook.cpp"
+	"shared/utility/Memory.cpp"
+	"shared/utility/Module.cpp"
+	"shared/utility/Patch.cpp"
+	"shared/utility/Pattern.cpp"
+	"shared/utility/PointerHook.cpp"
+	"shared/utility/Scan.cpp"
+	"shared/utility/String.cpp"
+	"shared/utility/Thread.cpp"
+	"shared/utility/Address.hpp"
+	"shared/utility/Config.hpp"
+	"shared/utility/FunctionHook.hpp"
+	"shared/utility/Memory.hpp"
+	"shared/utility/Module.hpp"
+	"shared/utility/Patch.hpp"
+	"shared/utility/Pattern.hpp"
+	"shared/utility/PointerHook.hpp"
+	"shared/utility/Scan.hpp"
+	"shared/utility/String.hpp"
+	"shared/utility/Thread.hpp"
 )
 
-list(APPEND lua_SOURCES
+list(APPEND utility_SOURCES
 	cmake.toml
 )
 
-set(CMKR_SOURCES ${lua_SOURCES})
-add_library(lua STATIC)
+set(CMKR_SOURCES ${utility_SOURCES})
+add_library(utility STATIC)
 
-if(lua_SOURCES)
-	target_sources(lua PRIVATE ${lua_SOURCES})
+if(utility_SOURCES)
+	target_sources(utility PRIVATE ${utility_SOURCES})
 endif()
 
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lua_SOURCES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${utility_SOURCES})
 
-target_include_directories(lua PUBLIC
-	"dependencies/lua/src"
+target_compile_features(utility PUBLIC
+	cxx_std_20
+)
+
+target_compile_options(utility PUBLIC
+	"/EHa"
+)
+
+target_link_libraries(utility PUBLIC
+	spdlog
+	minhook
 )
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
 
-# Target sol2
-set(CMKR_TARGET sol2)
-set(sol2_SOURCES "")
+# Target RE2SDK
+if(REF_BUILD_RE2_SDK OR REF_BUILD_FRAMEWORK) # build-re2-sdk
+	set(CMKR_TARGET RE2SDK)
+	set(RE2SDK_SOURCES "")
 
-set(CMKR_SOURCES ${sol2_SOURCES})
-add_library(sol2 INTERFACE)
+	list(APPEND RE2SDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
 
-if(sol2_SOURCES)
-	target_sources(sol2 INTERFACE ${sol2_SOURCES})
+	list(APPEND RE2SDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${RE2SDK_SOURCES})
+	add_library(RE2SDK STATIC)
+
+	if(RE2SDK_SOURCES)
+		target_sources(RE2SDK PRIVATE ${RE2SDK_SOURCES})
+	endif()
+
+	target_compile_features(RE2SDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(RE2SDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(RE2SDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(RE2SDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(RE2SDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(RE2SDK PUBLIC
+		RE2
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
-
-target_include_directories(sol2 INTERFACE
-	"dependencies/sol2/single/include"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
-
-# Target nlohmann_json
-set(CMKR_TARGET nlohmann_json)
-set(nlohmann_json_SOURCES "")
-
-set(CMKR_SOURCES ${nlohmann_json_SOURCES})
-add_library(nlohmann_json INTERFACE)
-
-if(nlohmann_json_SOURCES)
-	target_sources(nlohmann_json INTERFACE ${nlohmann_json_SOURCES})
-endif()
-
-target_include_directories(nlohmann_json INTERFACE
-	"dependencies/nlohmann"
-)
-
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
 
 # Target RE2
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET RE2)
 	set(RE2_SOURCES "")
 
@@ -319,6 +712,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -349,38 +743,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -411,235 +780,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -679,6 +819,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(RE2 PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -688,7 +829,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(RE2 PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -725,8 +868,293 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	unset(CMKR_SOURCES)
 endif()
 
+# Target RE3SDK
+if(REF_BUILD_RE3_SDK OR REF_BUILD_FRAMEWORK) # build-re3-sdk
+	set(CMKR_TARGET RE3SDK)
+	set(RE3SDK_SOURCES "")
+
+	list(APPEND RE3SDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
+
+	list(APPEND RE3SDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${RE3SDK_SOURCES})
+	add_library(RE3SDK STATIC)
+
+	if(RE3SDK_SOURCES)
+		target_sources(RE3SDK PRIVATE ${RE3SDK_SOURCES})
+	endif()
+
+	target_compile_features(RE3SDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(RE3SDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(RE3SDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(RE3SDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(RE3SDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(RE3SDK PUBLIC
+		RE3
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target RE3
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET RE3)
 	set(RE3_SOURCES "")
 
@@ -735,6 +1163,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -765,38 +1194,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -827,235 +1231,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -1095,6 +1270,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(RE3 PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -1104,7 +1280,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(RE3 PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -1141,8 +1319,293 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	unset(CMKR_SOURCES)
 endif()
 
+# Target RE7SDK
+if(REF_BUILD_RE7_SDK OR REF_BUILD_FRAMEWORK) # build-re7-sdk
+	set(CMKR_TARGET RE7SDK)
+	set(RE7SDK_SOURCES "")
+
+	list(APPEND RE7SDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
+
+	list(APPEND RE7SDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${RE7SDK_SOURCES})
+	add_library(RE7SDK STATIC)
+
+	if(RE7SDK_SOURCES)
+		target_sources(RE7SDK PRIVATE ${RE7SDK_SOURCES})
+	endif()
+
+	target_compile_features(RE7SDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(RE7SDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(RE7SDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(RE7SDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(RE7SDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(RE7SDK PUBLIC
+		RE7
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target RE7
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET RE7)
 	set(RE7_SOURCES "")
 
@@ -1151,6 +1614,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -1181,38 +1645,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -1243,235 +1682,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -1511,6 +1721,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(RE7 PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -1520,7 +1731,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(RE7 PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -1557,8 +1770,293 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	unset(CMKR_SOURCES)
 endif()
 
+# Target RE8SDK
+if(REF_BUILD_RE8_SDK OR REF_BUILD_FRAMEWORK) # build-re8-sdk
+	set(CMKR_TARGET RE8SDK)
+	set(RE8SDK_SOURCES "")
+
+	list(APPEND RE8SDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
+
+	list(APPEND RE8SDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${RE8SDK_SOURCES})
+	add_library(RE8SDK STATIC)
+
+	if(RE8SDK_SOURCES)
+		target_sources(RE8SDK PRIVATE ${RE8SDK_SOURCES})
+	endif()
+
+	target_compile_features(RE8SDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(RE8SDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(RE8SDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(RE8SDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(RE8SDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(RE8SDK PUBLIC
+		RE8
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target RE8
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET RE8)
 	set(RE8_SOURCES "")
 
@@ -1567,6 +2065,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -1597,38 +2096,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -1659,235 +2133,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -1927,6 +2172,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(RE8 PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -1936,7 +2182,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(RE8 PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -1973,8 +2221,293 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	unset(CMKR_SOURCES)
 endif()
 
+# Target DMC5SDK
+if(REF_BUILD_DMC5_SDK OR REF_BUILD_FRAMEWORK) # build-dmc5-sdk
+	set(CMKR_TARGET DMC5SDK)
+	set(DMC5SDK_SOURCES "")
+
+	list(APPEND DMC5SDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
+
+	list(APPEND DMC5SDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${DMC5SDK_SOURCES})
+	add_library(DMC5SDK STATIC)
+
+	if(DMC5SDK_SOURCES)
+		target_sources(DMC5SDK PRIVATE ${DMC5SDK_SOURCES})
+	endif()
+
+	target_compile_features(DMC5SDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(DMC5SDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(DMC5SDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(DMC5SDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(DMC5SDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(DMC5SDK PUBLIC
+		DMC5
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target DMC5
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET DMC5)
 	set(DMC5_SOURCES "")
 
@@ -1983,6 +2516,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -2013,38 +2547,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -2075,235 +2584,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -2343,6 +2623,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(DMC5 PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -2352,7 +2633,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(DMC5 PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -2389,8 +2672,293 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	unset(CMKR_SOURCES)
 endif()
 
+# Target MHRISESDK
+if(REF_BUILD_MHRISE_SDK OR REF_BUILD_FRAMEWORK) # build-mhrise-sdk
+	set(CMKR_TARGET MHRISESDK)
+	set(MHRISESDK_SOURCES "")
+
+	list(APPEND MHRISESDK_SOURCES
+		"shared/sdk/Application.cpp"
+		"shared/sdk/MurmurHash.cpp"
+		"shared/sdk/REContext.cpp"
+		"shared/sdk/REGlobals.cpp"
+		"shared/sdk/REManagedObject.cpp"
+		"shared/sdk/RETransform.cpp"
+		"shared/sdk/REType.cpp"
+		"shared/sdk/RETypeDB.cpp"
+		"shared/sdk/RETypeDefinition.cpp"
+		"shared/sdk/RETypes.cpp"
+		"shared/sdk/Renderer.cpp"
+		"shared/sdk/ResourceManager.cpp"
+		"shared/sdk/SDK.cpp"
+		"shared/sdk/SceneManager.cpp"
+		"shared/sdk/SystemArray.cpp"
+		"shared/sdk/helpers/NativeObject.cpp"
+		"shared/sdk/Application.hpp"
+		"shared/sdk/Enums_Internal.hpp"
+		"shared/sdk/Math.hpp"
+		"shared/sdk/MurmurHash.hpp"
+		"shared/sdk/REArray.hpp"
+		"shared/sdk/REComponent.hpp"
+		"shared/sdk/REContext.hpp"
+		"shared/sdk/REGlobals.hpp"
+		"shared/sdk/REManagedObject.hpp"
+		"shared/sdk/REMath.hpp"
+		"shared/sdk/RENativeArray.hpp"
+		"shared/sdk/REString.hpp"
+		"shared/sdk/RETransform.hpp"
+		"shared/sdk/REType.hpp"
+		"shared/sdk/RETypeCLR.hpp"
+		"shared/sdk/RETypeDB.hpp"
+		"shared/sdk/RETypeDefinition.hpp"
+		"shared/sdk/RETypes.hpp"
+		"shared/sdk/REVariableDescriptor.hpp"
+		"shared/sdk/ReClass.hpp"
+		"shared/sdk/ReClass_Internal.hpp"
+		"shared/sdk/ReClass_Internal_DMC5.hpp"
+		"shared/sdk/ReClass_Internal_RE3.hpp"
+		"shared/sdk/ReClass_Internal_RE7.hpp"
+		"shared/sdk/ReClass_Internal_RE8.hpp"
+		"shared/sdk/Renderer.hpp"
+		"shared/sdk/ResourceManager.hpp"
+		"shared/sdk/RopewaySweetLightManager.hpp"
+		"shared/sdk/SDK.hpp"
+		"shared/sdk/SceneManager.hpp"
+		"shared/sdk/SystemArray.hpp"
+		"shared/sdk/helpers/NativeObject.hpp"
+		"shared/sdk/regenny/re3/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re3/ManagedVtable.hpp"
+		"shared/sdk/regenny/re3/System/String.hpp"
+		"shared/sdk/regenny/re3/TypeDefinition.hpp"
+		"shared/sdk/regenny/re3/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re3/game/InputSystem.hpp"
+		"shared/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re3/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re3/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re3/via/CameraType.hpp"
+		"shared/sdk/regenny/re3/via/Color.hpp"
+		"shared/sdk/regenny/re3/via/Component.hpp"
+		"shared/sdk/regenny/re3/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re3/via/DisplayType.hpp"
+		"shared/sdk/regenny/re3/via/Folder.hpp"
+		"shared/sdk/regenny/re3/via/GameObject.hpp"
+		"shared/sdk/regenny/re3/via/Joint.hpp"
+		"shared/sdk/regenny/re3/via/JointArray.hpp"
+		"shared/sdk/regenny/re3/via/JointData.hpp"
+		"shared/sdk/regenny/re3/via/JointDesc.hpp"
+		"shared/sdk/regenny/re3/via/JointMap.hpp"
+		"shared/sdk/regenny/re3/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re3/via/Motion.hpp"
+		"shared/sdk/regenny/re3/via/Point.hpp"
+		"shared/sdk/regenny/re3/via/Range.hpp"
+		"shared/sdk/regenny/re3/via/RenderType.hpp"
+		"shared/sdk/regenny/re3/via/Scene.hpp"
+		"shared/sdk/regenny/re3/via/SceneArray.hpp"
+		"shared/sdk/regenny/re3/via/SceneManager.hpp"
+		"shared/sdk/regenny/re3/via/SceneView.hpp"
+		"shared/sdk/regenny/re3/via/Size.hpp"
+		"shared/sdk/regenny/re3/via/Transform.hpp"
+		"shared/sdk/regenny/re3/via/Window.hpp"
+		"shared/sdk/regenny/re3/via/array.hpp"
+		"shared/sdk/regenny/re3/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re3/via/mat4.hpp"
+		"shared/sdk/regenny/re3/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re3/via/vec3.hpp"
+		"shared/sdk/regenny/re3/via/vec4.hpp"
+		"shared/sdk/regenny/re7/BullShit.hpp"
+		"shared/sdk/regenny/re7/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/ManagedVtable.hpp"
+		"shared/sdk/regenny/re7/RenderDeviceDX11.hpp"
+		"shared/sdk/regenny/re7/StdMap.hpp"
+		"shared/sdk/regenny/re7/StdMapData.hpp"
+		"shared/sdk/regenny/re7/StdMapNode.hpp"
+		"shared/sdk/regenny/re7/System/String.hpp"
+		"shared/sdk/regenny/re7/System/Type.hpp"
+		"shared/sdk/regenny/re7/TypeArray.hpp"
+		"shared/sdk/regenny/re7/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/Unk.hpp"
+		"shared/sdk/regenny/re7/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re7/game/InputSystem.hpp"
+		"shared/sdk/regenny/re7/tdb49/Event.hpp"
+		"shared/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/MethodParam.hpp"
+		"shared/sdk/regenny/re7/tdb49/Module.hpp"
+		"shared/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb49/TDB.hpp"
+		"shared/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re7/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re7/via/Application.hpp"
+		"shared/sdk/regenny/re7/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re7/via/CameraType.hpp"
+		"shared/sdk/regenny/re7/via/Color.hpp"
+		"shared/sdk/regenny/re7/via/Component.hpp"
+		"shared/sdk/regenny/re7/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re7/via/DisplayType.hpp"
+		"shared/sdk/regenny/re7/via/Entry.hpp"
+		"shared/sdk/regenny/re7/via/Folder.hpp"
+		"shared/sdk/regenny/re7/via/GameObject.hpp"
+		"shared/sdk/regenny/re7/via/JobSet.hpp"
+		"shared/sdk/regenny/re7/via/Joint.hpp"
+		"shared/sdk/regenny/re7/via/JointArray.hpp"
+		"shared/sdk/regenny/re7/via/JointData.hpp"
+		"shared/sdk/regenny/re7/via/JointDesc.hpp"
+		"shared/sdk/regenny/re7/via/JointMap.hpp"
+		"shared/sdk/regenny/re7/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re7/via/Motion.hpp"
+		"shared/sdk/regenny/re7/via/Object.hpp"
+		"shared/sdk/regenny/re7/via/Point.hpp"
+		"shared/sdk/regenny/re7/via/Range.hpp"
+		"shared/sdk/regenny/re7/via/RenderType.hpp"
+		"shared/sdk/regenny/re7/via/Scene.hpp"
+		"shared/sdk/regenny/re7/via/SceneArray.hpp"
+		"shared/sdk/regenny/re7/via/SceneManager.hpp"
+		"shared/sdk/regenny/re7/via/SceneView.hpp"
+		"shared/sdk/regenny/re7/via/Size.hpp"
+		"shared/sdk/regenny/re7/via/Transform.hpp"
+		"shared/sdk/regenny/re7/via/Window.hpp"
+		"shared/sdk/regenny/re7/via/array.hpp"
+		"shared/sdk/regenny/re7/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re7/via/clr/VM.hpp"
+		"shared/sdk/regenny/re7/via/delegate.hpp"
+		"shared/sdk/regenny/re7/via/dictionary.hpp"
+		"shared/sdk/regenny/re7/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re7/via/gui/Control.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re7/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re7/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re7/via/gui/View.hpp"
+		"shared/sdk/regenny/re7/via/gui/Window.hpp"
+		"shared/sdk/regenny/re7/via/mat4.hpp"
+		"shared/sdk/regenny/re7/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Method.hpp"
+		"shared/sdk/regenny/re7/via/reflection/MethodArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Property.hpp"
+		"shared/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
+		"shared/sdk/regenny/re7/via/reflection/Reflection.hpp"
+		"shared/sdk/regenny/re7/via/render/LayerList.hpp"
+		"shared/sdk/regenny/re7/via/render/LightRenderer.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetState.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderLayer.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderResource.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetView.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/Renderer.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
+		"shared/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
+		"shared/sdk/regenny/re7/via/render/layer/Output.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
+		"shared/sdk/regenny/re7/via/vec3.hpp"
+		"shared/sdk/regenny/re7/via/vec4.hpp"
+		"shared/sdk/regenny/re8/DeserializeSequence.hpp"
+		"shared/sdk/regenny/re8/ManagedVtable.hpp"
+		"shared/sdk/regenny/re8/System/String.hpp"
+		"shared/sdk/regenny/re8/TypeDefinition.hpp"
+		"shared/sdk/regenny/re8/game/IkArmFit.hpp"
+		"shared/sdk/regenny/re8/game/InputSystem.hpp"
+		"shared/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
+		"shared/sdk/regenny/re8/tdb67/TDB.hpp"
+		"shared/sdk/regenny/re8/via/BasisPlane.hpp"
+		"shared/sdk/regenny/re8/via/CameraType.hpp"
+		"shared/sdk/regenny/re8/via/Color.hpp"
+		"shared/sdk/regenny/re8/via/Component.hpp"
+		"shared/sdk/regenny/re8/via/DeviceOrientation.hpp"
+		"shared/sdk/regenny/re8/via/DisplayType.hpp"
+		"shared/sdk/regenny/re8/via/Folder.hpp"
+		"shared/sdk/regenny/re8/via/GameObject.hpp"
+		"shared/sdk/regenny/re8/via/JobSet.hpp"
+		"shared/sdk/regenny/re8/via/Joint.hpp"
+		"shared/sdk/regenny/re8/via/JointArray.hpp"
+		"shared/sdk/regenny/re8/via/JointData.hpp"
+		"shared/sdk/regenny/re8/via/JointDesc.hpp"
+		"shared/sdk/regenny/re8/via/JointMap.hpp"
+		"shared/sdk/regenny/re8/via/MobileBarState.hpp"
+		"shared/sdk/regenny/re8/via/Motion.hpp"
+		"shared/sdk/regenny/re8/via/Object.hpp"
+		"shared/sdk/regenny/re8/via/Point.hpp"
+		"shared/sdk/regenny/re8/via/Range.hpp"
+		"shared/sdk/regenny/re8/via/RenderType.hpp"
+		"shared/sdk/regenny/re8/via/Scene.hpp"
+		"shared/sdk/regenny/re8/via/SceneArray.hpp"
+		"shared/sdk/regenny/re8/via/SceneManager.hpp"
+		"shared/sdk/regenny/re8/via/SceneView.hpp"
+		"shared/sdk/regenny/re8/via/Size.hpp"
+		"shared/sdk/regenny/re8/via/Transform.hpp"
+		"shared/sdk/regenny/re8/via/Window.hpp"
+		"shared/sdk/regenny/re8/via/array.hpp"
+		"shared/sdk/regenny/re8/via/clr/ManagedObject.hpp"
+		"shared/sdk/regenny/re8/via/fixed_array_jobs.hpp"
+		"shared/sdk/regenny/re8/via/gui/Control.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUI.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIManager.hpp"
+		"shared/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
+		"shared/sdk/regenny/re8/via/gui/PlayObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
+		"shared/sdk/regenny/re8/via/gui/TransformObject.hpp"
+		"shared/sdk/regenny/re8/via/gui/View.hpp"
+		"shared/sdk/regenny/re8/via/gui/Window.hpp"
+		"shared/sdk/regenny/re8/via/mat4.hpp"
+		"shared/sdk/regenny/re8/via/motion/AxisDirection.hpp"
+		"shared/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
+		"shared/sdk/regenny/re8/via/vec3.hpp"
+		"shared/sdk/regenny/re8/via/vec4.hpp"
+	)
+
+	list(APPEND MHRISESDK_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${MHRISESDK_SOURCES})
+	add_library(MHRISESDK STATIC)
+
+	if(MHRISESDK_SOURCES)
+		target_sources(MHRISESDK PRIVATE ${MHRISESDK_SOURCES})
+	endif()
+
+	target_compile_features(MHRISESDK PUBLIC
+		cxx_std_20
+	)
+
+	target_compile_options(MHRISESDK PUBLIC
+		"/EHa"
+	)
+
+	target_include_directories(MHRISESDK PUBLIC
+		"shared/"
+		"include/"
+	)
+
+	target_link_libraries(MHRISESDK PUBLIC
+		glm_static
+		spdlog
+		Zydis
+	)
+
+	target_link_libraries(MHRISESDK PRIVATE
+		utility
+	)
+
+	target_compile_definitions(MHRISESDK PUBLIC
+		MHRISE
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target MHRISE
-if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
 	set(CMKR_TARGET MHRISE)
 	set(MHRISE_SOURCES "")
 
@@ -2399,6 +2967,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/D3D12Hook.cpp"
 		"src/DInputHook.cpp"
 		"src/ExceptionHandler.cpp"
+		"src/HookManager.cpp"
 		"src/Main.cpp"
 		"src/Mods.cpp"
 		"src/REFramework.cpp"
@@ -2429,38 +2998,13 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/re2-imgui/imgui_impl_dx11.cpp"
 		"src/re2-imgui/imgui_impl_dx12.cpp"
 		"src/re2-imgui/imgui_impl_win32.cpp"
-		"src/sdk/Application.cpp"
-		"src/sdk/MurmurHash.cpp"
-		"src/sdk/REContext.cpp"
-		"src/sdk/REGlobals.cpp"
-		"src/sdk/REManagedObject.cpp"
-		"src/sdk/RETransform.cpp"
-		"src/sdk/REType.cpp"
-		"src/sdk/RETypeDB.cpp"
-		"src/sdk/RETypeDefinition.cpp"
-		"src/sdk/RETypes.cpp"
-		"src/sdk/Renderer.cpp"
-		"src/sdk/ResourceManager.cpp"
-		"src/sdk/SceneManager.cpp"
-		"src/sdk/SystemArray.cpp"
-		"src/sdk/helpers/NativeObject.cpp"
-		"src/utility/Address.cpp"
-		"src/utility/Config.cpp"
-		"src/utility/FunctionHook.cpp"
-		"src/utility/Memory.cpp"
-		"src/utility/Module.cpp"
-		"src/utility/Patch.cpp"
-		"src/utility/Pattern.cpp"
-		"src/utility/PointerHook.cpp"
-		"src/utility/Scan.cpp"
-		"src/utility/String.cpp"
-		"src/utility/Thread.cpp"
 		"src/D3D11Hook.hpp"
 		"src/D3D12Hook.hpp"
 		"src/DInputHook.hpp"
 		"src/ExceptionHandler.hpp"
 		"src/Genny.hpp"
 		"src/GennyIda.hpp"
+		"src/HookManager.hpp"
 		"src/LicenseStrings.hpp"
 		"src/Mod.hpp"
 		"src/Mods.hpp"
@@ -2491,235 +3035,6 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 		"src/mods/vr/OverlayComponent.hpp"
 		"src/re2-imgui/font_robotomedium.hpp"
 		"src/re2-imgui/re2_imconfig.hpp"
-		"src/sdk/Application.hpp"
-		"src/sdk/Enums_Internal.hpp"
-		"src/sdk/Math.hpp"
-		"src/sdk/MurmurHash.hpp"
-		"src/sdk/REArray.hpp"
-		"src/sdk/REComponent.hpp"
-		"src/sdk/REContext.hpp"
-		"src/sdk/REGlobals.hpp"
-		"src/sdk/REManagedObject.hpp"
-		"src/sdk/REMath.hpp"
-		"src/sdk/RENativeArray.hpp"
-		"src/sdk/REString.hpp"
-		"src/sdk/RETransform.hpp"
-		"src/sdk/REType.hpp"
-		"src/sdk/RETypeCLR.hpp"
-		"src/sdk/RETypeDB.hpp"
-		"src/sdk/RETypeDefinition.hpp"
-		"src/sdk/RETypes.hpp"
-		"src/sdk/REVariableDescriptor.hpp"
-		"src/sdk/ReClass.hpp"
-		"src/sdk/ReClass_Internal.hpp"
-		"src/sdk/ReClass_Internal_DMC5.hpp"
-		"src/sdk/ReClass_Internal_RE3.hpp"
-		"src/sdk/ReClass_Internal_RE7.hpp"
-		"src/sdk/ReClass_Internal_RE8.hpp"
-		"src/sdk/Renderer.hpp"
-		"src/sdk/ResourceManager.hpp"
-		"src/sdk/RopewaySweetLightManager.hpp"
-		"src/sdk/SceneManager.hpp"
-		"src/sdk/SystemArray.hpp"
-		"src/sdk/helpers/NativeObject.hpp"
-		"src/sdk/regenny/re3/DeserializeSequence.hpp"
-		"src/sdk/regenny/re3/ManagedVtable.hpp"
-		"src/sdk/regenny/re3/System/String.hpp"
-		"src/sdk/regenny/re3/TypeDefinition.hpp"
-		"src/sdk/regenny/re3/game/IkArmFit.hpp"
-		"src/sdk/regenny/re3/game/InputSystem.hpp"
-		"src/sdk/regenny/re3/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re3/tdb67/TDB.hpp"
-		"src/sdk/regenny/re3/via/BasisPlane.hpp"
-		"src/sdk/regenny/re3/via/CameraType.hpp"
-		"src/sdk/regenny/re3/via/Color.hpp"
-		"src/sdk/regenny/re3/via/Component.hpp"
-		"src/sdk/regenny/re3/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re3/via/DisplayType.hpp"
-		"src/sdk/regenny/re3/via/Folder.hpp"
-		"src/sdk/regenny/re3/via/GameObject.hpp"
-		"src/sdk/regenny/re3/via/Joint.hpp"
-		"src/sdk/regenny/re3/via/JointArray.hpp"
-		"src/sdk/regenny/re3/via/JointData.hpp"
-		"src/sdk/regenny/re3/via/JointDesc.hpp"
-		"src/sdk/regenny/re3/via/JointMap.hpp"
-		"src/sdk/regenny/re3/via/MobileBarState.hpp"
-		"src/sdk/regenny/re3/via/Motion.hpp"
-		"src/sdk/regenny/re3/via/Point.hpp"
-		"src/sdk/regenny/re3/via/Range.hpp"
-		"src/sdk/regenny/re3/via/RenderType.hpp"
-		"src/sdk/regenny/re3/via/Scene.hpp"
-		"src/sdk/regenny/re3/via/SceneArray.hpp"
-		"src/sdk/regenny/re3/via/SceneManager.hpp"
-		"src/sdk/regenny/re3/via/SceneView.hpp"
-		"src/sdk/regenny/re3/via/Size.hpp"
-		"src/sdk/regenny/re3/via/Transform.hpp"
-		"src/sdk/regenny/re3/via/Window.hpp"
-		"src/sdk/regenny/re3/via/array.hpp"
-		"src/sdk/regenny/re3/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re3/via/mat4.hpp"
-		"src/sdk/regenny/re3/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re3/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re3/via/vec3.hpp"
-		"src/sdk/regenny/re3/via/vec4.hpp"
-		"src/sdk/regenny/re7/BullShit.hpp"
-		"src/sdk/regenny/re7/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/ManagedVtable.hpp"
-		"src/sdk/regenny/re7/RenderDeviceDX11.hpp"
-		"src/sdk/regenny/re7/StdMap.hpp"
-		"src/sdk/regenny/re7/StdMapData.hpp"
-		"src/sdk/regenny/re7/StdMapNode.hpp"
-		"src/sdk/regenny/re7/System/String.hpp"
-		"src/sdk/regenny/re7/System/Type.hpp"
-		"src/sdk/regenny/re7/TypeArray.hpp"
-		"src/sdk/regenny/re7/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/Unk.hpp"
-		"src/sdk/regenny/re7/game/IkArmFit.hpp"
-		"src/sdk/regenny/re7/game/InputSystem.hpp"
-		"src/sdk/regenny/re7/tdb49/Event.hpp"
-		"src/sdk/regenny/re7/tdb49/FieldDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/MethodParam.hpp"
-		"src/sdk/regenny/re7/tdb49/Module.hpp"
-		"src/sdk/regenny/re7/tdb49/PropertyDefinition.hpp"
-		"src/sdk/regenny/re7/tdb49/TDB.hpp"
-		"src/sdk/regenny/re7/tdb49/TypeDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re7/tdb67/TDB.hpp"
-		"src/sdk/regenny/re7/via/Application.hpp"
-		"src/sdk/regenny/re7/via/BasisPlane.hpp"
-		"src/sdk/regenny/re7/via/CameraType.hpp"
-		"src/sdk/regenny/re7/via/Color.hpp"
-		"src/sdk/regenny/re7/via/Component.hpp"
-		"src/sdk/regenny/re7/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re7/via/DisplayType.hpp"
-		"src/sdk/regenny/re7/via/Entry.hpp"
-		"src/sdk/regenny/re7/via/Folder.hpp"
-		"src/sdk/regenny/re7/via/GameObject.hpp"
-		"src/sdk/regenny/re7/via/JobSet.hpp"
-		"src/sdk/regenny/re7/via/Joint.hpp"
-		"src/sdk/regenny/re7/via/JointArray.hpp"
-		"src/sdk/regenny/re7/via/JointData.hpp"
-		"src/sdk/regenny/re7/via/JointDesc.hpp"
-		"src/sdk/regenny/re7/via/JointMap.hpp"
-		"src/sdk/regenny/re7/via/MobileBarState.hpp"
-		"src/sdk/regenny/re7/via/Motion.hpp"
-		"src/sdk/regenny/re7/via/Object.hpp"
-		"src/sdk/regenny/re7/via/Point.hpp"
-		"src/sdk/regenny/re7/via/Range.hpp"
-		"src/sdk/regenny/re7/via/RenderType.hpp"
-		"src/sdk/regenny/re7/via/Scene.hpp"
-		"src/sdk/regenny/re7/via/SceneArray.hpp"
-		"src/sdk/regenny/re7/via/SceneManager.hpp"
-		"src/sdk/regenny/re7/via/SceneView.hpp"
-		"src/sdk/regenny/re7/via/Size.hpp"
-		"src/sdk/regenny/re7/via/Transform.hpp"
-		"src/sdk/regenny/re7/via/Window.hpp"
-		"src/sdk/regenny/re7/via/array.hpp"
-		"src/sdk/regenny/re7/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re7/via/clr/VM.hpp"
-		"src/sdk/regenny/re7/via/delegate.hpp"
-		"src/sdk/regenny/re7/via/dictionary.hpp"
-		"src/sdk/regenny/re7/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re7/via/gui/Control.hpp"
-		"src/sdk/regenny/re7/via/gui/GUI.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re7/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re7/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re7/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re7/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re7/via/gui/View.hpp"
-		"src/sdk/regenny/re7/via/gui/Window.hpp"
-		"src/sdk/regenny/re7/via/mat4.hpp"
-		"src/sdk/regenny/re7/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re7/via/reflection/Method.hpp"
-		"src/sdk/regenny/re7/via/reflection/MethodArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Property.hpp"
-		"src/sdk/regenny/re7/via/reflection/PropertyArray.hpp"
-		"src/sdk/regenny/re7/via/reflection/Reflection.hpp"
-		"src/sdk/regenny/re7/via/render/LayerList.hpp"
-		"src/sdk/regenny/re7/via/render/LightRenderer.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetState.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX11.hpp"
-		"src/sdk/regenny/re7/via/render/OutputTargetStateDX12.hpp"
-		"src/sdk/regenny/re7/via/render/RenderLayer.hpp"
-		"src/sdk/regenny/re7/via/render/RenderResource.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetView.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX11.hpp"
-		"src/sdk/regenny/re7/via/render/RenderTargetViewDX12.hpp"
-		"src/sdk/regenny/re7/via/render/Renderer.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX11.hpp"
-		"src/sdk/regenny/re7/via/render/TargetDescriptorDX12.hpp"
-		"src/sdk/regenny/re7/via/render/layer/Output.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/DeserializeSequence.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/Deserializer.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re7/via/typeinfo/TypeInfoCLR.hpp"
-		"src/sdk/regenny/re7/via/vec3.hpp"
-		"src/sdk/regenny/re7/via/vec4.hpp"
-		"src/sdk/regenny/re8/DeserializeSequence.hpp"
-		"src/sdk/regenny/re8/ManagedVtable.hpp"
-		"src/sdk/regenny/re8/System/String.hpp"
-		"src/sdk/regenny/re8/TypeDefinition.hpp"
-		"src/sdk/regenny/re8/game/IkArmFit.hpp"
-		"src/sdk/regenny/re8/game/InputSystem.hpp"
-		"src/sdk/regenny/re8/tdb67/MethodDefinition.hpp"
-		"src/sdk/regenny/re8/tdb67/TDB.hpp"
-		"src/sdk/regenny/re8/via/BasisPlane.hpp"
-		"src/sdk/regenny/re8/via/CameraType.hpp"
-		"src/sdk/regenny/re8/via/Color.hpp"
-		"src/sdk/regenny/re8/via/Component.hpp"
-		"src/sdk/regenny/re8/via/DeviceOrientation.hpp"
-		"src/sdk/regenny/re8/via/DisplayType.hpp"
-		"src/sdk/regenny/re8/via/Folder.hpp"
-		"src/sdk/regenny/re8/via/GameObject.hpp"
-		"src/sdk/regenny/re8/via/JobSet.hpp"
-		"src/sdk/regenny/re8/via/Joint.hpp"
-		"src/sdk/regenny/re8/via/JointArray.hpp"
-		"src/sdk/regenny/re8/via/JointData.hpp"
-		"src/sdk/regenny/re8/via/JointDesc.hpp"
-		"src/sdk/regenny/re8/via/JointMap.hpp"
-		"src/sdk/regenny/re8/via/MobileBarState.hpp"
-		"src/sdk/regenny/re8/via/Motion.hpp"
-		"src/sdk/regenny/re8/via/Object.hpp"
-		"src/sdk/regenny/re8/via/Point.hpp"
-		"src/sdk/regenny/re8/via/Range.hpp"
-		"src/sdk/regenny/re8/via/RenderType.hpp"
-		"src/sdk/regenny/re8/via/Scene.hpp"
-		"src/sdk/regenny/re8/via/SceneArray.hpp"
-		"src/sdk/regenny/re8/via/SceneManager.hpp"
-		"src/sdk/regenny/re8/via/SceneView.hpp"
-		"src/sdk/regenny/re8/via/Size.hpp"
-		"src/sdk/regenny/re8/via/Transform.hpp"
-		"src/sdk/regenny/re8/via/Window.hpp"
-		"src/sdk/regenny/re8/via/array.hpp"
-		"src/sdk/regenny/re8/via/clr/ManagedObject.hpp"
-		"src/sdk/regenny/re8/via/fixed_array_jobs.hpp"
-		"src/sdk/regenny/re8/via/gui/Control.hpp"
-		"src/sdk/regenny/re8/via/gui/GUI.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIManager.hpp"
-		"src/sdk/regenny/re8/via/gui/GUIMeshRenderer.hpp"
-		"src/sdk/regenny/re8/via/gui/PlayObject.hpp"
-		"src/sdk/regenny/re8/via/gui/PrimitiveContext.hpp"
-		"src/sdk/regenny/re8/via/gui/TransformObject.hpp"
-		"src/sdk/regenny/re8/via/gui/View.hpp"
-		"src/sdk/regenny/re8/via/gui/Window.hpp"
-		"src/sdk/regenny/re8/via/mat4.hpp"
-		"src/sdk/regenny/re8/via/motion/AxisDirection.hpp"
-		"src/sdk/regenny/re8/via/typeinfo/TypeInfo.hpp"
-		"src/sdk/regenny/re8/via/vec3.hpp"
-		"src/sdk/regenny/re8/via/vec4.hpp"
-		"src/utility/Address.hpp"
-		"src/utility/Config.hpp"
-		"src/utility/FunctionHook.hpp"
-		"src/utility/Memory.hpp"
-		"src/utility/Module.hpp"
-		"src/utility/Patch.hpp"
-		"src/utility/Pattern.hpp"
-		"src/utility/PointerHook.hpp"
-		"src/utility/Scan.hpp"
-		"src/utility/String.hpp"
-		"src/utility/Thread.hpp"
 		"src/re2-imgui/imgui_impl_dx11.h"
 		"src/re2-imgui/imgui_impl_dx12.h"
 		"src/re2-imgui/imgui_impl_win32.h"
@@ -2759,6 +3074,7 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_include_directories(MHRISE PUBLIC
+		"shared/"
 		"src/"
 		"include/"
 	)
@@ -2768,7 +3084,9 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 	)
 
 	target_link_libraries(MHRISE PUBLIC
-		xbyak
+		${CMKR_TARGET}SDK
+		utility
+		asmjit::asmjit
 		nlohmann_json
 		spdlog
 		lua
@@ -2806,69 +3124,120 @@ if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) # msvc-win64
 endif()
 
 # Target example_plugin
-set(CMKR_TARGET example_plugin)
-set(example_plugin_SOURCES "")
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET example_plugin)
+	set(example_plugin_SOURCES "")
 
-list(APPEND example_plugin_SOURCES
-	"example_plugin/Plugin.cpp"
-	"example_plugin/imgui/imgui_impl_dx11.cpp"
-	"example_plugin/imgui/imgui_impl_dx12.cpp"
-	"example_plugin/imgui/imgui_impl_win32.cpp"
-	"example_plugin/rendering/d3d11.cpp"
-	"example_plugin/rendering/d3d12.cpp"
-	"example_plugin/Plugin.hpp"
-	"example_plugin/imgui/font_robotomedium.hpp"
-	"example_plugin/imgui/re2_imconfig.hpp"
-	"example_plugin/rendering/d3d11.hpp"
-	"example_plugin/rendering/d3d12.hpp"
-	"example_plugin/rendering/shared.hpp"
-	"example_plugin/imgui/imgui_impl_dx11.h"
-	"example_plugin/imgui/imgui_impl_dx12.h"
-	"example_plugin/imgui/imgui_impl_win32.h"
-)
+	list(APPEND example_plugin_SOURCES
+		"examples/example_plugin/Plugin.cpp"
+		"examples/example_plugin/imgui/imgui_impl_dx11.cpp"
+		"examples/example_plugin/imgui/imgui_impl_dx12.cpp"
+		"examples/example_plugin/imgui/imgui_impl_win32.cpp"
+		"examples/example_plugin/rendering/d3d11.cpp"
+		"examples/example_plugin/rendering/d3d12.cpp"
+		"examples/example_plugin/Plugin.hpp"
+		"examples/example_plugin/imgui/font_robotomedium.hpp"
+		"examples/example_plugin/imgui/re2_imconfig.hpp"
+		"examples/example_plugin/rendering/d3d11.hpp"
+		"examples/example_plugin/rendering/d3d12.hpp"
+		"examples/example_plugin/rendering/shared.hpp"
+		"examples/example_plugin/imgui/imgui_impl_dx11.h"
+		"examples/example_plugin/imgui/imgui_impl_dx12.h"
+		"examples/example_plugin/imgui/imgui_impl_win32.h"
+	)
 
-list(APPEND example_plugin_SOURCES
-	cmake.toml
-)
+	list(APPEND example_plugin_SOURCES
+		cmake.toml
+	)
 
-set(CMKR_SOURCES ${example_plugin_SOURCES})
-add_library(example_plugin SHARED)
+	set(CMKR_SOURCES ${example_plugin_SOURCES})
+	add_library(example_plugin SHARED)
 
-if(example_plugin_SOURCES)
-	target_sources(example_plugin PRIVATE ${example_plugin_SOURCES})
+	if(example_plugin_SOURCES)
+		target_sources(example_plugin PRIVATE ${example_plugin_SOURCES})
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${example_plugin_SOURCES})
+
+	target_compile_features(example_plugin PUBLIC
+		cxx_std_20
+	)
+
+	target_include_directories(example_plugin PUBLIC
+		"include/"
+	)
+
+	target_link_libraries(example_plugin PUBLIC
+		lua
+		sol2
+		imgui
+	)
+
+	set_target_properties(example_plugin PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+		RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+		LIBRARY_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		ARCHIVE_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
 endif()
 
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${example_plugin_SOURCES})
+# Target weapon_stay_big_plugin
+if(REF_BUILD_FRAMEWORK AND CMAKE_SIZEOF_VOID_P EQUAL 8) # build-framework
+	set(CMKR_TARGET weapon_stay_big_plugin)
+	set(weapon_stay_big_plugin_SOURCES "")
 
-target_compile_features(example_plugin PUBLIC
-	cxx_std_20
-)
+	list(APPEND weapon_stay_big_plugin_SOURCES
+		"examples/weapon_stay_big_plugin/weapon_stay_big.cpp"
+	)
 
-target_include_directories(example_plugin PUBLIC
-	"include/"
-)
+	list(APPEND weapon_stay_big_plugin_SOURCES
+		cmake.toml
+	)
 
-target_link_libraries(example_plugin PUBLIC
-	lua
-	sol2
-	imgui
-)
+	set(CMKR_SOURCES ${weapon_stay_big_plugin_SOURCES})
+	add_library(weapon_stay_big_plugin SHARED)
 
-set_target_properties(example_plugin PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY_RELEASE
-		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
-	RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
-		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
-	LIBRARY_OUTPUT_DIRECTORY_RELEASE
-		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
-	LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
-		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
-	ARCHIVE_OUTPUT_DIRECTORY_RELEASE
-		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
-	ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
-		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
-)
+	if(weapon_stay_big_plugin_SOURCES)
+		target_sources(weapon_stay_big_plugin PRIVATE ${weapon_stay_big_plugin_SOURCES})
+	endif()
 
-unset(CMKR_TARGET)
-unset(CMKR_SOURCES)
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${weapon_stay_big_plugin_SOURCES})
+
+	target_compile_features(weapon_stay_big_plugin PUBLIC
+		cxx_std_20
+	)
+
+	target_include_directories(weapon_stay_big_plugin PUBLIC
+		"include/"
+	)
+
+	set_target_properties(weapon_stay_big_plugin PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+		RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+		LIBRARY_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		ARCHIVE_OUTPUT_DIRECTORY_RELEASE
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+		ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
+			"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+	)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
 

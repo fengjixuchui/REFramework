@@ -11,6 +11,8 @@
 
 #include "APIProxy.hpp"
 #include "ScriptRunner.hpp"
+#include "HookManager.hpp"
+
 #include "PluginLoader.hpp"
 
 REFrameworkPluginVersion g_plugin_version{
@@ -44,9 +46,12 @@ void log_info(const char* format, ...) {
     va_end(args);
     spdlog::info("[Plugin] {}", str);
 }
+bool is_drawing_ui() {
+    return g_framework->is_drawing_ui();
+}
 }
 
-REFrameworkPluginFunctions g_plugin_functions{
+REFrameworkPluginFunctions g_plugin_functions {
     reframework_on_lua_state_created,
     reframework_on_lua_state_destroyed,
     reframework_on_present,
@@ -59,6 +64,7 @@ REFrameworkPluginFunctions g_plugin_functions{
     reframework::log_error,
     reframework::log_warn,
     reframework::log_info,
+    reframework::is_drawing_ui
 };
 
 REFrameworkSDKFunctions g_sdk_functions {
@@ -66,7 +72,7 @@ REFrameworkSDKFunctions g_sdk_functions {
     []() { return (REFrameworkResourceManagerHandle)sdk::ResourceManager::get(); },
     []() { return (REFrameworkVMContextHandle)sdk::get_thread_context(); }, // get_vm_context
     [](const char* name) -> REFrameworkManagedObjectHandle { // typeof
-        auto tdef = sdk::RETypeDB::get()->find_type(name);
+        auto tdef = sdk::find_type_definition(name);
 
         if (tdef == nullptr) {
             return nullptr;
@@ -75,14 +81,14 @@ REFrameworkSDKFunctions g_sdk_functions {
         return (REFrameworkManagedObjectHandle)tdef->get_runtime_type();
     },
     [](const char* name) -> REFrameworkManagedObjectHandle {
-        return (REFrameworkManagedObjectHandle)g_framework->get_globals()->get(name);
+        return (REFrameworkManagedObjectHandle)reframework::get_globals()->get(name);
     },
     [](const char* name) {
         return sdk::get_native_singleton(name);
     },
     // get_managed_singletons
     [](REFrameworkManagedSingleton* out, unsigned int out_size, unsigned int* out_count) -> REFrameworkResult {
-        auto singletons = g_framework->get_globals()->get_objects();
+        auto singletons = reframework::get_globals()->get_objects();
 
         if (out_size < singletons.size() * sizeof(REFrameworkManagedSingleton)) {
             return REFRAMEWORK_ERROR_OUT_TOO_SMALL;
@@ -112,7 +118,7 @@ REFrameworkSDKFunctions g_sdk_functions {
     },
     // get_native_singletons
     [](REFrameworkNativeSingleton* out, unsigned int out_size, unsigned int* out_count) -> REFrameworkResult {
-        auto& native_singletons = g_framework->get_globals()->get_native_singleton_types();
+        auto& native_singletons = reframework::get_globals()->get_native_singleton_types();
 
         if (out_size < native_singletons.size() * sizeof(REFrameworkNativeSingleton)) {
             return REFRAMEWORK_ERROR_OUT_TOO_SMALL;
@@ -152,6 +158,23 @@ REFrameworkSDKFunctions g_sdk_functions {
     [](const char* str) -> REFrameworkManagedObjectHandle {
         return (REFrameworkManagedObjectHandle)sdk::VM::create_managed_string(utility::widen(str));
     },
+    [](REFrameworkMethodHandle fn, REFPreHookFn pre_fn, REFPostHookFn post_fn, bool ignore_jmp) -> unsigned int {
+        return g_hookman.add((sdk::REMethodDefinition*)fn, [pre_fn](auto& args, auto& arg_tys) {
+                if (pre_fn != nullptr) {
+                    return (HookManager::PreHookResult)pre_fn((int)args.size(),
+                        (void**)args.data(), (REFrameworkTypeDefinitionHandle*)arg_tys.data());
+                } else {
+                    return (HookManager::PreHookResult)REFRAMEWORK_HOOK_CALL_ORIGINAL;
+                }
+            },
+            [post_fn](auto& ret_val, auto* ret_ty) {
+                if (post_fn != nullptr) {
+                    post_fn((void**)&ret_val, (REFrameworkTypeDefinitionHandle)ret_ty);
+                }
+            },
+            ignore_jmp);
+    },
+    [](REFrameworkMethodHandle fn, unsigned int id) { g_hookman.remove((sdk::REMethodDefinition*)fn, (HookManager::HookId)id); },
 };
 
 #define RETYPEDEF(var) ((sdk::RETypeDefinition*)var)
@@ -408,7 +431,7 @@ REFrameworkManagedObject g_managed_object_data {
 REFrameworkResourceManager g_resource_manager_data {
     [](REFrameworkResourceManagerHandle mgr, const char* type_name, const char* name) -> REFrameworkResourceHandle {
         // NOT a type definition.
-        auto t = g_framework->get_types()->get(type_name);
+        auto t = reframework::get_types()->get(type_name);
 
         if (t == nullptr) {
             return nullptr;

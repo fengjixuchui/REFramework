@@ -14,6 +14,7 @@
 #include "utility/Patch.hpp"
 #include "sdk/Math.hpp"
 #include "sdk/helpers/NativeObject.hpp"
+#include "sdk/Renderer.hpp"
 #include "vr/D3D11Component.hpp"
 #include "vr/D3D12Component.hpp"
 #include "vr/OverlayComponent.hpp"
@@ -157,6 +158,8 @@ public:
     Vector2f get_left_stick_axis() const;
     Vector2f get_right_stick_axis() const;
 
+    void trigger_haptic_vibration(float seconds_from_now, float duration, float frequency, float amplitude, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle);
+    
     auto get_action_set() const { return m_action_set; }
     auto& get_active_action_set() const { return m_active_action_set; }
     auto get_action_trigger() const { return m_action_trigger; }
@@ -165,13 +168,52 @@ public:
     auto get_action_joystick_click() const { return m_action_joystick_click; }
     auto get_action_a_button() const { return m_action_a_button; }
     auto get_action_b_button() const { return m_action_b_button; }
+    auto get_action_weapon_dial() const { return m_action_weapon_dial; }
+    auto get_action_minimap() const { return m_action_minimap; }
+    auto get_action_block() const { return m_action_block; }
+    auto get_action_dpad_up() const { return m_action_dpad_up; }
+    auto get_action_dpad_down() const { return m_action_dpad_down; }
+    auto get_action_dpad_left() const { return m_action_dpad_left; }
+    auto get_action_dpad_right() const { return m_action_dpad_right; }
+    auto get_action_heal() const { return m_action_heal; }
     auto get_left_joystick() const { return m_left_joystick; }
     auto get_right_joystick() const { return m_right_joystick; }
 
     const auto& get_action_handles() const { return m_action_handles;}
 
-    auto get_ui_scale() const { return m_ui_scale; }
+    auto get_ui_scale() const { return m_ui_scale_option->value(); }
     const auto& get_raw_projections() const { return m_raw_projections; }
+
+    template<typename T=sdk::renderer::RenderLayer>
+    struct RenderLayerHook {
+        RenderLayerHook() = delete;
+        RenderLayerHook(std::string_view name)
+            : name{name}
+        {
+
+        }
+
+        static void draw(T* layer, void* render_context);
+        static void update(T* layer, void* render_context);
+
+        std::unique_ptr<FunctionHook> draw_hook{};
+        std::unique_ptr<FunctionHook> update_hook{};
+        std::string name{};
+
+        virtual bool hook_draw(Address target) {
+            draw_hook = std::make_unique<FunctionHook>(target, &RenderLayerHook<T>::draw);
+            return draw_hook->create();
+        }
+
+        virtual bool hook_update(Address target) {
+            update_hook = std::make_unique<FunctionHook>(target, &RenderLayerHook<T>::update);
+            return update_hook->create();
+        }
+
+        operator RenderLayerHook<sdk::renderer::RenderLayer>&() {
+            return *(RenderLayerHook<sdk::renderer::RenderLayer>*)this;
+        }
+    };
 
 private:
     Vector4f get_position_unsafe(uint32_t index);
@@ -183,8 +225,10 @@ private:
     static float* get_size_hook(REManagedObject* scene_view, float* result);
     static void inputsystem_update_hook(void* ctx, REManagedObject* input_system);
     static Matrix4x4f* camera_get_projection_matrix_hook(REManagedObject* camera, Matrix4x4f* result);
+    static Matrix4x4f* gui_camera_get_projection_matrix_hook(REManagedObject* camera, Matrix4x4f* result);
     static Matrix4x4f* camera_get_view_matrix_hook(REManagedObject* camera, Matrix4x4f* result);
-    static void overlay_draw_hook(void* layer, void* render_context);
+    static void overlay_draw_hook(sdk::renderer::RenderLayer* layer, void* render_context);
+    static void post_effect_draw_hook(sdk::renderer::RenderLayer* layer, void* render_context);
     static void wwise_listener_update_hook(void* listener);
 
     //static float get_sharpness_hook(void* tonemapping);
@@ -195,7 +239,7 @@ private:
     std::optional<std::string> hijack_resolution();
     std::optional<std::string> hijack_input();
     std::optional<std::string> hijack_camera();
-    std::optional<std::string> hijack_overlay_renderer();
+    std::optional<std::string> hijack_render_layer(VR::RenderLayerHook<sdk::renderer::RenderLayer>& hook);
     std::optional<std::string> hijack_wwise_listeners(); // audio hook
 
     std::optional<std::string> reinitialize_openvr() {
@@ -230,6 +274,7 @@ private:
     void restore_camera(); // After rendering
     void set_lens_distortion(bool value);
     void disable_bad_effects();
+    void fix_temporal_effects();
 
     // input functions
     // Purpose: "Emulate" OpenVR input to the game
@@ -240,6 +285,12 @@ private:
     // Sets overlay layer to return instantly
     // causes world-space gui elements to render properly
     Patch::Ptr m_overlay_draw_patch{};
+
+    struct {
+        RenderLayerHook<sdk::renderer::layer::Overlay> overlay{"via.render.layer.Overlay"};
+        RenderLayerHook<sdk::renderer::layer::PostEffect> post_effect{"via.render.layer.PostEffect"};
+        RenderLayerHook<sdk::renderer::layer::Scene> scene{"via.render.layer.Scene"};
+    } m_layer_hooks;
     
     std::recursive_mutex m_openvr_mtx{};
     std::recursive_mutex m_wwise_mtx{};
@@ -247,8 +298,6 @@ private:
     std::shared_mutex m_gui_mtx{};
     std::shared_mutex m_eyes_mtx{};
     std::shared_mutex m_rotation_mtx{};
-
-    REManagedObject* m_main_view{nullptr};
 
     vr::VRTextureBounds_t m_right_bounds{ 0.0f, 0.0f, 1.0f, 1.0f };
     vr::VRTextureBounds_t m_left_bounds{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -302,6 +351,9 @@ private:
     vr::VRActionHandle_t m_action_re2_change_ammo{};
     vr::VRActionHandle_t m_action_re2_toggle_flashlight{};
     vr::VRActionHandle_t m_action_minimap{};
+    vr::VRActionHandle_t m_action_block{};
+    vr::VRActionHandle_t m_action_haptic{};
+    vr::VRActionHandle_t m_action_heal{};
 
     bool m_was_firstperson_toggle_down{false};
     bool m_was_flashlight_toggle_down{false};
@@ -326,7 +378,12 @@ private:
         { "/actions/default/in/RE2_Reset_View", m_action_re2_reset_view },
         { "/actions/default/in/RE2_Change_Ammo", m_action_re2_change_ammo },
         { "/actions/default/in/RE2_Toggle_Flashlight", m_action_re2_toggle_flashlight },
-        { "/actions/default/in/MiniMap", m_action_minimap }
+        { "/actions/default/in/MiniMap", m_action_minimap },
+        { "/actions/default/in/Block", m_action_block },
+        { "/actions/default/in/Heal", m_action_heal },
+
+        // Out
+        { "/actions/default/out/Haptic", m_action_haptic },
     };
 
     // Input sources
@@ -339,6 +396,7 @@ private:
     std::bitset<64> m_button_states_up{};
     std::chrono::steady_clock::time_point m_last_controller_update{};
     std::chrono::steady_clock::time_point m_last_interaction_display{};
+    uint32_t m_backbuffer_inconsistency_start{};
     std::chrono::nanoseconds m_last_input_delay{};
     std::chrono::nanoseconds m_avg_input_delay{};
 
@@ -355,6 +413,8 @@ private:
     Vector4f m_original_camera_position{ 0.0f, 0.0f, 0.0f, 0.0f };
     glm::quat m_original_camera_rotation{ glm::identity<glm::quat>() };
 
+    Matrix4x4f m_original_camera_matrix{ glm::identity<Matrix4x4f>() };
+
     Vector4f m_original_audio_camera_position{ 0.0f, 0.0f, 0.0f, 0.0f };
     glm::quat m_original_audio_camera_rotation{ glm::identity<glm::quat>() };
 
@@ -363,7 +423,6 @@ private:
     sdk::helpers::NativeObject m_via_hid_gamepad{ "via.hid.GamePad" };
 
     // options
-    float m_ui_scale{15.0f};
     int m_frame_count{};
     int m_last_frame_count{-1};
     int m_left_eye_frame_count{0};
@@ -387,6 +446,8 @@ private:
     bool m_request_reinitialize_openvr{false};
     bool m_positional_tracking{true};
     bool m_handle_pause{false}; // happens when dashboard opens
+    bool m_is_d3d12{false};
+    bool m_backbuffer_inconsistency{false};
 
     // on the backburner
     bool m_depth_aided_reprojection{false};
@@ -425,6 +486,9 @@ private:
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
     const ModSlider::Ptr m_motion_controls_inactivity_timer{ ModSlider::create(generate_name("MotionControlsInactivityTimer"), 10.0f, 100.0f, 10.0f) };
     const ModSlider::Ptr m_joystick_deadzone{ ModSlider::create(generate_name("JoystickDeadzone"), 0.01f, 0.9f, 0.15f) };
+    const ModSlider::Ptr m_ui_scale_option{ ModSlider::create(generate_name("2DUIScale"), 1.0f, 100.0f, 12.0f) };
+    const ModSlider::Ptr m_ui_distance_option{ ModSlider::create(generate_name("2DUIDistance"), 0.01f, 100.0f, 1.0f) };
+    const ModSlider::Ptr m_world_ui_scale_option{ ModSlider::create(generate_name("WorldSpaceUIScale"), 1.0f, 100.0f, 15.0f) };
 
     const ModToggle::Ptr m_force_fps_settings{ ModToggle::create(generate_name("ForceFPS"), true) };
     const ModToggle::Ptr m_force_aa_settings{ ModToggle::create(generate_name("ForceAntiAliasing"), true) };
@@ -433,9 +497,15 @@ private:
     const ModToggle::Ptr m_force_lensdistortion_settings{ ModToggle::create(generate_name("ForceLensDistortion"), true) };
     const ModToggle::Ptr m_force_volumetrics_settings{ ModToggle::create(generate_name("ForceVolumetrics"), true) };
     const ModToggle::Ptr m_force_lensflares_settings{ ModToggle::create(generate_name("ForceLensFlares"), true) };
+    const ModToggle::Ptr m_force_dynamic_shadows_settings{ ModToggle::create(generate_name("ForceDynamicShadows"), true) };
+    const ModToggle::Ptr m_allow_engine_overlays{ ModToggle::create(generate_name("AllowEngineOverlays"), true) };
 
     bool m_disable_projection_matrix_override{ false };
+    bool m_disable_gui_camera_projection_matrix_override{ false };
     bool m_disable_view_matrix_override{false};
+    bool m_disable_backbuffer_size_override{false};
+    bool m_disable_temporal_fix{false};
+    bool m_disable_post_effect_fix{false};
 
     ValueList m_options{
         *m_set_standing_key,
@@ -453,7 +523,12 @@ private:
         *m_force_vsync_settings,
         *m_force_lensdistortion_settings,
         *m_force_volumetrics_settings,
-        *m_force_lensflares_settings
+        *m_force_lensflares_settings,
+        *m_force_dynamic_shadows_settings,
+        *m_ui_scale_option,
+        *m_ui_distance_option,
+        *m_world_ui_scale_option,
+        *m_allow_engine_overlays
     };
 
     bool m_use_rotation{true};

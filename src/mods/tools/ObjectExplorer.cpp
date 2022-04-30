@@ -11,6 +11,7 @@
 #include "utility/Scan.hpp"
 #include "utility/Module.hpp"
 #include "utility/Memory.hpp"
+#include "sdk/Renderer.hpp"
 
 #include "Genny.hpp"
 #include "GennyIda.hpp"
@@ -307,6 +308,12 @@ genny::Enum* enum_from_name(genny::Namespace* g, const std::string& enum_name) {
     return new_ns->enum_(namespaces.back());
 }
 
+std::shared_ptr<ObjectExplorer>& ObjectExplorer::get() {
+    static auto instance = std::make_shared<ObjectExplorer>();
+
+    return instance;
+}
+
 ObjectExplorer::ObjectExplorer()
 {
     m_type_name.reserve(256);
@@ -335,12 +342,12 @@ void ObjectExplorer::on_draw_dev_ui() {
     // List of globals to choose from
     if (ImGui::CollapsingHeader("Singletons")) {
         if (curtime > m_next_refresh) {
-            g_framework->get_globals()->safe_refresh();
+            reframework::get_globals()->safe_refresh();
             m_next_refresh = curtime + std::chrono::seconds(1);
         }
 
         // make a copy, we want to sort by name
-        auto singletons = g_framework->get_globals()->get_objects();
+        auto singletons = reframework::get_globals()->get_objects();
 
         // first loop, sort
         std::sort(singletons.begin(), singletons.end(), [](REManagedObject* a, REManagedObject* b) {
@@ -379,12 +386,12 @@ void ObjectExplorer::on_draw_dev_ui() {
     }
 
     if (ImGui::CollapsingHeader("Native Singletons")) {
-        auto& native_singletons = g_framework->get_globals()->get_native_singleton_types();
+        auto& native_singletons = reframework::get_globals()->get_native_singleton_types();
 
         // Display the nodes
         for (auto t : native_singletons) {
             if (curtime > m_next_refresh_natives) {
-                g_framework->get_globals()->safe_refresh_native();
+                reframework::get_globals()->safe_refresh_native();
                 m_next_refresh_natives = curtime + std::chrono::seconds(1);
             }
 
@@ -392,6 +399,29 @@ void ObjectExplorer::on_draw_dev_ui() {
 
             if (obj != nullptr) {
                 handle_type((REManagedObject*)obj, t);
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Renderer")) {
+        auto root_layer = sdk::renderer::get_root_layer();
+        ImGui::Text("Root layer: 0x%p", root_layer);
+
+        if (root_layer != nullptr) {
+            auto [scene_parent, scene_layer] = root_layer->find_layer_recursive("via.render.layer.Scene");
+
+            if (scene_layer != nullptr) {
+                ImGui::Text("Scene layer: 0x%p", *scene_layer);
+            }
+
+            if (ImGui::TreeNode("Root Layer")) {
+                handle_address((void*)root_layer);
+                ImGui::TreePop();
+            }
+
+            if (scene_layer != nullptr && ImGui::TreeNode("Scene Layer")) {
+                handle_address((void*)*scene_layer);
+                ImGui::TreePop();
             }
         }
     }
@@ -648,7 +678,7 @@ void ObjectExplorer::generate_sdk() {
     json il2cpp_dump{};
 
 #ifdef TDB_DUMP_ALLOWED
-    auto tdb = (sdk::RETypeDB*)g_framework->get_types()->get_type_db();
+    auto tdb = (sdk::RETypeDB*)reframework::get_types()->get_type_db();
 
     // Types
     for (uint32_t i = 0; i < tdb->numTypes; ++i) {
@@ -1569,7 +1599,7 @@ void ObjectExplorer::generate_sdk() {
             auto m = c->static_function("get_type_info")->returns(g->type(TYPE_INFO_NAME)->ptr());
 
             std::stringstream os{};
-            os << "return g_framework->get_types()->get(\"" << t->name << "\");";
+            os << "return reframework::get_types()->get(\"" << t->name << "\");";
 
             m->procedure(os.str());
         }
@@ -1579,7 +1609,7 @@ void ObjectExplorer::generate_sdk() {
             auto m = c->static_function("get_type_definition")->returns(g->type(TYPE_DEFINITION_NAME)->ptr());
 
             std::stringstream os{};
-            os << "static auto t = sdk::RETypeDB::get()->find_type(\"" << t->name << "\");\n";
+            os << "static auto t = sdk::find_type_definition(\"" << t->name << "\");\n";
             os << "return t;";
 
             m->procedure(os.str());
@@ -1940,6 +1970,10 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
             handle_component(address.as<REComponent*>());
         }
 
+        if (utility::re_managed_object::is_a(object, "via.render.RenderLayer")) {
+            handle_render_layer(address.as<sdk::renderer::RenderLayer*>());
+        }
+
         handle_type(object, utility::re_managed_object::get_type(object));
 
         if (utility::re_managed_object::get_vm_type(object) == via::clr::VMObjType::Array) {
@@ -2015,7 +2049,7 @@ void ObjectExplorer::handle_game_object(REGameObject* game_object) {
     ImGui::PushID((void*)game_object);
 
     if (ImGui::InputText("Add Component", m_add_component_name.data(), 256, ImGuiInputTextFlags_::ImGuiInputTextFlags_EnterReturnsTrue)) {
-        const auto tdef = sdk::RETypeDB::get()->find_type(m_add_component_name.data());
+        const auto tdef = sdk::find_type_definition(m_add_component_name.data());
 
         if (tdef != nullptr) {
             auto typeof_component = tdef->get_runtime_type();
@@ -2124,6 +2158,21 @@ void ObjectExplorer::handle_component(REComponent* component) {
 
 void ObjectExplorer::handle_transform(RETransform* transform) {
 
+}
+
+void ObjectExplorer::handle_render_layer(sdk::renderer::RenderLayer* layer) {
+    auto made_node = ImGui::TreeNode(&layer->m_layers, "Child Layers");
+    context_menu(&layer->m_layers);
+
+    if (made_node) {
+        int32_t count = 0;
+
+        for (auto child_layer : layer->get_layers()) {
+            handle_address(child_layer, count++, layer);
+        }
+
+        ImGui::TreePop();
+    }
 }
 
 void ObjectExplorer::handle_type(REManagedObject* obj, REType* t) {
@@ -2442,7 +2491,7 @@ void ObjectExplorer::display_native_fields(REManagedObject* obj, sdk::RETypeDefi
 
     bool owner_is_valuetype = tdef->get_vm_obj_type() == via::clr::VMObjType::ValType;
 
-    auto tdb = g_framework->get_types()->get_type_db();
+    auto tdb = reframework::get_types()->get_type_db();
 
     if (ImGui::TreeNode(*fields.begin(), "TDB Fields: %i", fields.size())) {
         for (auto f : fields) {
@@ -2547,7 +2596,7 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
 
     const auto is_real_object = utility::re_managed_object::is_managed_object(obj);
     auto methods = tdef->get_methods();
-    auto tdb = g_framework->get_types()->get_type_db();
+    auto tdb = reframework::get_types()->get_type_db();
 
     if (methods.size() == 0) {
         return;
@@ -2583,7 +2632,7 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
             ss << ")";
             const auto method_prototype = ss.str();
 
-            const auto made_node = widget_with_context(method_ptr, [&]() { return stretched_tree_node(&m, "%s", method_return_type_name.c_str()); });
+            const auto made_node = widget_with_context(method_ptr, method_prototype, [&]() { return stretched_tree_node(&m, "%s", method_return_type_name.c_str()); });
             const auto tree_hovered = ImGui::IsItemHovered();
 
             // Draw the method name with a color
@@ -2769,8 +2818,8 @@ void ObjectExplorer::display_data(void* data, void* real_data, std::string type_
     // yay for compile time string hashing
     switch (utility::hash(type_name)) {
     case "via.GameObjectRef"_fnv: {
-        static auto object_ref_type = sdk::RETypeDB::get()->find_type("via.GameObjectRef");
-        auto obj = sdk::call_object_func<REGameObject*>(data, object_ref_type, "get_Target", sdk::get_thread_context(), data);
+        static auto object_ref_type = sdk::find_type_definition("via.GameObjectRef");
+        auto obj = sdk::call_native_func_easy<REGameObject*>(data, object_ref_type, "get_Target");
 
         if (obj != nullptr && is_managed_object(obj)) {
             if (widget_with_context(obj, [&]() { return ImGui::TreeNode(obj, "Ref Target: 0x%p", obj); })) {
@@ -3203,14 +3252,27 @@ bool ObjectExplorer::widget_with_context(void* address, std::function<bool()> wi
     return ret;
 }
 
-void ObjectExplorer::context_menu(void* address) {
+bool ObjectExplorer::widget_with_context(void* address, const std::string& name, std::function<bool()> widget) {
+    auto ret = widget();
+    context_menu(address, name);
+
+    return ret;
+}
+
+void ObjectExplorer::context_menu(void* address, std::optional<std::string> name) {
     if (ImGui::BeginPopupContextItem()) {
-        if (ImGui::Selectable("Copy")) {
+        if (ImGui::Selectable("Copy Address")) {
             std::stringstream ss;
             ss << std::hex << (uintptr_t)address;
 
             ImGui::SetClipboardText(ss.str().c_str());
         }
+
+        if (name && ImGui::Selectable("Copy Name")) {
+            ImGui::SetClipboardText(name->c_str());
+        }
+
+        const auto is_managed_object = utility::re_managed_object::is_managed_object(address);
 
         if (auto it = std::find_if(m_pinned_objects.begin(), m_pinned_objects.end(), [address](auto& pinned_obj) { return pinned_obj.address == address; }); it != m_pinned_objects.end()) {
             if (ImGui::Selectable("Unpin")) {
@@ -3220,7 +3282,6 @@ void ObjectExplorer::context_menu(void* address) {
             if (ImGui::Selectable("Pin")) {
                 auto& pinned = m_pinned_objects.emplace_back();
 
-                const auto is_managed_object = utility::re_managed_object::is_managed_object(address);
                 const auto type_definition = is_managed_object ? utility::re_managed_object::get_type_definition((REManagedObject*)address) : nullptr;
 
                 pinned.address = address;
@@ -3230,7 +3291,7 @@ void ObjectExplorer::context_menu(void* address) {
         }
 
         // Log component hierarchy to disk
-        if (is_managed_object(address) && utility::re_managed_object::is_a((REManagedObject*)address, "via.Component") && ImGui::Selectable("Log Hierarchy")) {
+        if (is_managed_object && utility::re_managed_object::is_a((REManagedObject*)address, "via.Component") && ImGui::Selectable("Log Hierarchy")) {
             auto comp = (REComponent*)address;
 
             for (auto obj = comp; obj; obj = obj->childComponent) {
@@ -3291,7 +3352,7 @@ bool ObjectExplorer::is_managed_object(Address address) const {
 }
 
 void ObjectExplorer::populate_classes() {
-    auto& type_list = *g_framework->get_types()->get_raw_types();
+    auto& type_list = *reframework::get_types()->get_raw_types();
     spdlog::info("TypeList: {:x}", (uintptr_t)&type_list);
 
     // I don't know why but it can extend past the size.
