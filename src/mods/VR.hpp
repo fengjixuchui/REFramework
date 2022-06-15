@@ -149,17 +149,21 @@ public:
         return m_render_camera_matrix;
     }
 
-    Vector4f get_position(uint32_t index);
-    Vector4f get_velocity(uint32_t index);
-    Vector4f get_angular_velocity(uint32_t index);
-    Matrix4x4f get_rotation(uint32_t index);
-    Matrix4x4f get_transform(uint32_t index);
-    vr::HmdMatrix34_t get_raw_transform(uint32_t index);
+    Vector4f get_position(uint32_t index)  const;
+    Vector4f get_velocity(uint32_t index)  const;
+    Vector4f get_angular_velocity(uint32_t index)  const;
+    Matrix4x4f get_rotation(uint32_t index)  const;
+    Matrix4x4f get_transform(uint32_t index) const;
+    vr::HmdMatrix34_t get_raw_transform(uint32_t index) const;
 
     const auto& get_eyes() const {
         return get_runtime()->eyes;
     }
+
+    void apply_hmd_transform(glm::quat& rotation, Vector4f& position);
+    void apply_hmd_transform(::REJoint* camera_joint);
     
+    bool is_hand_behind_head(VRRuntime::Hand hand, float sensitivity = 0.2f) const;
     bool is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle) const;
     Vector2f get_joystick_axis(vr::VRInputValueHandle_t handle) const;
 
@@ -224,9 +228,9 @@ public:
     };
 
 private:
-    Vector4f get_position_unsafe(uint32_t index);
-    Vector4f get_velocity_unsafe(uint32_t index);
-    Vector4f get_angular_velocity_unsafe(uint32_t index);
+    Vector4f get_position_unsafe(uint32_t index) const;
+    Vector4f get_velocity_unsafe(uint32_t index) const;
+    Vector4f get_angular_velocity_unsafe(uint32_t index) const;
 
 private:
     // Hooks
@@ -306,8 +310,6 @@ private:
     void update_action_states();
     void update_camera(); // if not in firstperson mode
     void update_camera_origin(); // every frame
-    void apply_hmd_transform(glm::quat& rotation, Vector4f& position);
-    void apply_hmd_transform(::REJoint* camera_joint);
     void update_audio_camera();
     void update_render_matrix();
     void restore_audio_camera(); // after wwise listener update
@@ -332,10 +334,10 @@ private:
         RenderLayerHook<sdk::renderer::layer::Scene> scene{"via.render.layer.Scene"};
     } m_layer_hooks;
     
-    std::recursive_mutex m_openvr_mtx{};
-    std::recursive_mutex m_wwise_mtx{};
-    std::shared_mutex m_gui_mtx{};
-    std::shared_mutex m_rotation_mtx{};
+    mutable std::recursive_mutex m_openvr_mtx{};
+    mutable std::recursive_mutex m_wwise_mtx{};
+    mutable std::shared_mutex m_gui_mtx{};
+    mutable std::shared_mutex m_rotation_mtx{};
 
     vr::VRTextureBounds_t m_right_bounds{ 0.0f, 0.0f, 1.0f, 1.0f };
     vr::VRTextureBounds_t m_left_bounds{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -468,6 +470,7 @@ private:
     bool m_is_d3d12{false};
     bool m_backbuffer_inconsistency{false};
     bool m_init_finished{false};
+    bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling
 
     // on the backburner
     bool m_depth_aided_reprojection{false};
@@ -499,7 +502,7 @@ private:
     const ModToggle::Ptr m_use_custom_view_distance{ ModToggle::create(generate_name("UseCustomViewDistance"), false) };
     const ModToggle::Ptr m_hmd_oriented_audio{ ModToggle::create(generate_name("HMDOrientedAudio"), true) };
     const ModSlider::Ptr m_view_distance{ ModSlider::create(generate_name("CustomViewDistance"), 10.0f, 3000.0f, 500.0f) };
-    const ModSlider::Ptr m_motion_controls_inactivity_timer{ ModSlider::create(generate_name("MotionControlsInactivityTimer"), 10.0f, 100.0f, 10.0f) };
+    const ModSlider::Ptr m_motion_controls_inactivity_timer{ ModSlider::create(generate_name("MotionControlsInactivityTimer"), 30.0f, 100.0f, 30.0f) };
     const ModSlider::Ptr m_joystick_deadzone{ ModSlider::create(generate_name("JoystickDeadzone"), 0.01f, 0.9f, 0.15f) };
     const ModSlider::Ptr m_ui_scale_option{ ModSlider::create(generate_name("2DUIScale"), 1.0f, 100.0f, 12.0f) };
     const ModSlider::Ptr m_ui_distance_option{ ModSlider::create(generate_name("2DUIDistance"), 0.01f, 100.0f, 1.0f) };
@@ -515,6 +518,8 @@ private:
     const ModToggle::Ptr m_force_lensflares_settings{ ModToggle::create(generate_name("ForceLensFlares"), true) };
     const ModToggle::Ptr m_force_dynamic_shadows_settings{ ModToggle::create(generate_name("ForceDynamicShadows"), true) };
     const ModToggle::Ptr m_allow_engine_overlays{ ModToggle::create(generate_name("AllowEngineOverlays"), true) };
+    const ModToggle::Ptr m_desktop_fix{ ModToggle::create(generate_name("DesktopRecordingFix"), true) };
+    const ModToggle::Ptr m_desktop_fix_skip_present{ ModToggle::create(generate_name("DesktopRecordingFixSkipPresent"), true) };
 
     bool m_disable_projection_matrix_override{ false };
     bool m_disable_gui_camera_projection_matrix_override{ false };
@@ -546,7 +551,9 @@ private:
         *m_ui_distance_option,
         *m_world_ui_scale_option,
         *m_allow_engine_overlays,
-        *m_resolution_scale
+        *m_resolution_scale,
+        *m_desktop_fix,
+        *m_desktop_fix_skip_present
     };
 
     bool m_use_rotation{true};

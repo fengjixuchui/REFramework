@@ -318,7 +318,7 @@ sdk::RETypeDefinition* REMethodDefinition::get_return_type() const {
     auto tdb = RETypeDB::get();
 
 #if TDB_VER >= 69
-    auto param_ids = tdb->get_data<REParamList>(this->params);
+    auto param_ids = tdb->get_data<sdk::ParamList>(this->params);
     
     const auto return_param_id = param_ids->returnType;
     const auto& p = (*tdb->params)[return_param_id];
@@ -355,7 +355,7 @@ const char* REMethodDefinition::get_name() const {
 }
 
 void* REMethodDefinition::get_function() const {
-#ifndef RE7
+#if TDB_VER > 49
     return this->function;
 #else
     auto vm = sdk::VM::get();
@@ -370,7 +370,7 @@ uint32_t sdk::REMethodDefinition::get_invoke_id() const {
 
 #if TDB_VER >= 69
     const auto param_list = (uint32_t)this->params;
-    const auto param_ids = tdb->get_data<REParamList>(param_list);
+    const auto param_ids = tdb->get_data<sdk::ParamList>(param_list);
     const auto num_params = param_ids->numParams;
     const auto invoke_id = param_ids->invokeID;
 #else
@@ -389,7 +389,7 @@ reframework::InvokeRet sdk::REMethodDefinition::invoke(void* object, const std::
         return reframework::InvokeRet{};
     }
 
-#ifndef RE7
+#if TDB_VER > 49
     const auto invoke_tbl = sdk::get_invoke_table();
     auto invoke_wrapper = invoke_tbl[get_invoke_id()];
 
@@ -466,7 +466,7 @@ reframework::InvokeRet sdk::REMethodDefinition::invoke(void* object, const std::
     return out;
 #else
     // RE7 doesn't have the invoke wrappers that the newer games use...
-    if (num_params > 2) {
+    if (num_params > 3) {
         spdlog::warn("REMethodDefinition::invoke for {} has more than 2 parameters, which is not supported at this time (RE7)", get_name());
         return reframework::InvokeRet{};
     }
@@ -623,8 +623,141 @@ reframework::InvokeRet sdk::REMethodDefinition::invoke(void* object, const std::
         return out;
 
         break;
+    case 3:
+        // uhhhhhhh now this is just getting ridiculous
+        switch (param_hashes[0]) {
+        case "System.Single"_fnv:
+            switch (param_hashes[1]) {
+            case "System.Single"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<float, float, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<float, float, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<float, float, void*>();
+                    break;
+                }
+                break;
+            case "System.Double"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<float, double, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<float, double, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<float, double, void*>();
+                    break;
+                }
+                break;
+            default:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<float, void*, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<float, void*, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<float, void*, void*>();
+                    break;
+                }
+                break;
+            }
+            break;
+        case "System.Double"_fnv:
+            switch (param_hashes[1]) {
+            case "System.Single"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<double, float, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<double, float, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<double, float, void*>();
+                    break;
+                }
+                break;
+            case "System.Double"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<double, double, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<double, double, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<double, double, void*>();
+                    break;
+                }
+                break;
+            default:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<double, void*, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<double, void*, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<double, void*, void*>();
+                    break;
+                }
+                break;
+            }
+            break;
+        default:
+            switch (param_hashes[1]) {
+            case "System.Single"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<void*, float, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<void*, float, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<void*, float, void*>();
+                    break;
+                }
+                break;
+            case "System.Double"_fnv:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<void*, double, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<void*, double, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<void*, double, void*>();
+                    break;
+                }
+                break;
+            default:
+                switch (param_hashes[2]) {
+                case "System.Single"_fnv:
+                    unpack_and_call.operator()<void*, void*, float>();
+                    break;
+                case "System.Double"_fnv:
+                    unpack_and_call.operator()<void*, void*, double>();
+                    break;
+                default:
+                    unpack_and_call.operator()<void*, void*, void*>();
+                    break;
+                }
+                break;
+            }
+            break;
+        }
     default:
-        // for now, we aren't going to handle the case where there are more than 2 parameters
+        // for now, we aren't going to handle the case where there are more than 3 parameters
         // because that will get very very messy
         // maybe try to fix it with templates or JIT or something...
         // but for now, just return an empty struct
@@ -681,7 +814,7 @@ uint32_t sdk::REMethodDefinition::get_num_params() const {
 #if TDB_VER >= 69
     auto tdb = RETypeDB::get();
     const auto param_list = (uint32_t)this->params;
-    const auto param_ids = tdb->get_data<REParamList>(param_list);
+    const auto param_ids = tdb->get_data<sdk::ParamList>(param_list);
     return param_ids->numParams;
 #else
 #if TDB_VER >= 66
@@ -702,7 +835,7 @@ std::vector<uint32_t> REMethodDefinition::get_param_typeids() const {
 
     // Parameters
 #if TDB_VER >= 69
-    auto param_ids = tdb->get_data<REParamList>(param_list);
+    auto param_ids = tdb->get_data<sdk::ParamList>(param_list);
     const auto num_params = param_ids->numParams;
 
     // Parse all params
@@ -763,7 +896,7 @@ std::vector<const char*> REMethodDefinition::get_param_names() const {
     const auto param_list = (uint32_t)this->params;
 
 #if TDB_VER >= 69
-    auto param_ids = tdb->get_data<REParamList>(param_list);
+    auto param_ids = tdb->get_data<sdk::ParamList>(param_list);
     const auto num_params = param_ids->numParams;
 
     // Parse all params

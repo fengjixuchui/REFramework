@@ -5,12 +5,14 @@
 #include <imgui_internal.h>
 #include <glm/gtx/transform.hpp>
 
-#if defined(RE2) || defined(RE3) || defined(DMC5)
-#include "sdk/regenny/re3/via/Window.hpp"
-#include "sdk/regenny/re3/via/SceneView.hpp"
-#elif defined(RE7)
+#include <sdk/TDBVer.hpp>
+
+#if TDB_VER <= 49
 #include "sdk/regenny/re7/via/Window.hpp"
 #include "sdk/regenny/re7/via/SceneView.hpp"
+#elif TDB_VER < 69
+#include "sdk/regenny/re3/via/Window.hpp"
+#include "sdk/regenny/re3/via/SceneView.hpp"
 #else
 #include "sdk/regenny/re8/via/Window.hpp"
 #include "sdk/regenny/re8/via/SceneView.hpp"
@@ -28,6 +30,7 @@
 #include "utility/FunctionHook.hpp"
 #include "utility/Module.hpp"
 #include "utility/Memory.hpp"
+#include "utility/Registry.hpp"
 
 #include "FirstPerson.hpp"
 #include "ManualFlashlight.hpp"
@@ -58,7 +61,7 @@ std::unique_ptr<FunctionHook> g_post_effect_draw_hook{};
 std::unique_ptr<FunctionHook> g_wwise_listener_update_hook{};
 //std::unique_ptr<FunctionHook> g_get_sharpness_hook{};
 
-#ifdef RE7
+#if TDB_VER <= 49
 std::optional<regenny::via::Size> g_previous_size{};
 #endif
 
@@ -80,7 +83,17 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
     auto window = regenny_view->window;
 
     // Force the display to stretch to the window size
-    regenny_view->display_type = regenny::via::DisplayType::Fit;
+#if not defined(RE7) || TDB_VER <= 49
+    static auto is_sunbreak = utility::get_module_path(utility::get_executable())->find("MHRiseSunbreakDemo") != std::string::npos;
+
+    if (is_sunbreak) {
+        *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
+    } else {
+        regenny_view->display_type = regenny::via::DisplayType::Fit;
+    }
+#else
+    *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
+#endif
 
     auto wanted_width = 0.0f;
     auto wanted_height = 0.0f;
@@ -88,7 +101,7 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
     // Set the window size, which will increase the size of the backbuffer
     if (window != nullptr) {
         if (mod->is_hmd_active()) {
-#ifdef RE7
+#if TDB_VER <= 49
             if (!g_previous_size) {
                 g_previous_size = regenny::via::Size{ (float)window->width, (float)window->height };
             }
@@ -128,7 +141,7 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
         } else {
             mod->m_backbuffer_inconsistency = false;
 
-#ifndef RE7
+#if TDB_VER > 49
             window->width = (uint32_t)window->borderless_size.w;
             window->height = (uint32_t)window->borderless_size.h;
 #else
@@ -209,7 +222,7 @@ Matrix4x4f* VR::gui_camera_get_projection_matrix_hook(REManagedObject* camera, M
 
     // Get the projection matrix for the correct eye
     // For some reason we need to flip the projection matrix here?
-#ifndef RE7
+#if TDB_VER > 49
     *result = vr->get_current_projection_matrix(false);
 #else
     *result = vr->get_current_projection_matrix(true);
@@ -368,7 +381,7 @@ void VR::RenderLayerHook<sdk::renderer::layer::Overlay>::draw(sdk::renderer::lay
     // NOT RE3
     // for some reason RE3 has weird issues with the overlay rendering
     // causing double vision
-#ifndef RE3
+#if TDB_VER < 70 or (not defined(RE3) and not defined(RE2) and not defined(RE7))
     if (mod->m_allow_engine_overlays->value()) {
         original_func(layer, render_ctx);
     }
@@ -546,7 +559,7 @@ void VR::wwise_listener_update_hook(void* listener) {
         mod->update_audio_camera();
     }
 
-#ifndef RE7
+#if TDB_VER > 49
     constexpr auto CAMERA_OFFSET = 0x50;
 #else
     constexpr auto CAMERA_OFFSET = 0x58;
@@ -599,6 +612,10 @@ std::optional<std::string> VR::on_initialize() {
     auto openvr_error = initialize_openvr();
 
     if (openvr_error || !m_openvr->loaded) {
+        if (m_openvr->error) {
+            spdlog::info("OpenVR failed to load: {}", *m_openvr->error);
+        }
+
         m_openvr->is_hmd_active = false;
         m_openvr->was_hmd_active = false;
         m_openvr->needs_pose_update = false;
@@ -621,6 +638,16 @@ and place the openxr_loader.dll in the same folder.)";
         // so we're just going to return OK, but
         // when the VR mod draws its menu, it'll say "VR is not available"
         return Mod::on_initialize();
+    }
+
+    // Check whether the user has Hardware accelerated GPU scheduling enabled
+    const auto hw_schedule_value = utility::get_registry_dword(
+        HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+        "HwSchMode");
+
+    if (hw_schedule_value) {
+        m_has_hw_scheduling = *hw_schedule_value == 2;
     }
 
     auto hijack_error = hijack_resolution();
@@ -720,7 +747,13 @@ void VR::on_lua_state_created(sol::state& lua) {
             vr->apply_hmd_transform(rotation, position);
         },
         "trigger_haptic_vibration", &VR::trigger_haptic_vibration,
-        "get_last_render_matrix", &VR::get_last_render_matrix
+        "get_last_render_matrix", &VR::get_last_render_matrix,
+        "should_handle_pause", [](VR* vr) { 
+            return vr->get_runtime()->handle_pause;
+        },
+        "set_handle_pause", [](VR* vr, bool state) { 
+            return vr->get_runtime()->handle_pause = state;
+        }
     );
 
     lua["vrmod"] = this;
@@ -1764,6 +1797,31 @@ void VR::apply_hmd_transform(::REJoint* camera_joint) {
     }
 }
 
+bool VR::is_hand_behind_head(VRRuntime::Hand hand, float sensitivity) const {
+    if (hand > VRRuntime::Hand::RIGHT || !is_using_controllers()) {
+        return false;
+    }
+
+    const auto hand_index = get_controllers()[(uint32_t)hand];
+
+    const auto hmd = get_transform(0);
+    const auto hand_pos = get_position(hand_index);
+    const auto hmd_delta = Vector3f{hand_pos - hmd[3]};
+    const auto distance = glm::length(hmd_delta);
+
+    if (distance >= 0.3f) {
+        return false;
+    }
+
+    const auto hmd_dir = glm::normalize(hmd_delta);
+
+    const auto& hmd_forward = hmd[2];
+    const auto flattened_forward = glm::normalize(Vector3f{hmd_forward.x, 0.0f, hmd_forward.z});
+
+    const auto hand_dot_flat_raw = glm::dot(flattened_forward, hmd_dir);
+    return hand_dot_flat_raw >= sensitivity;
+}
+
 void VR::update_audio_camera() {
     if (!is_hmd_active()) {
         return;
@@ -2548,6 +2606,10 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                     return true;
                 }
 
+#ifdef RE7
+                static auto ui_world_pos_attach_typedef = sdk::find_type_definition("app.UIWorldPosAttach");
+#endif
+
                 auto ui_scale = m_ui_scale_option->value();
                 const auto world_ui_scale = m_world_ui_scale_option->value();
 
@@ -2658,6 +2720,27 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             for (auto c = child; c != nullptr; c = sdk::call_object_func<REManagedObject*>(c, "get_Next", context, c)) {
                                 fix_transform_object(c);
                             }
+
+                            // Fix for other kinds of world pos attach elements.
+#ifdef RE7
+                            if (name_hash == "InteractOperationCursor"_fnv) {
+                                auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
+
+                                // Fix the world position of the gui element
+                                if (world_pos_attach_comp != nullptr) {
+                                    auto target_cache = sdk::get_object_field<::REManagedObject*>(world_pos_attach_comp, "_TargetGUIElem");
+
+                                    if (target_cache != nullptr && *target_cache != nullptr) {
+                                        auto element = sdk::get_object_field<::REManagedObject*>(*target_cache, "_Element");
+
+                                        if (element != nullptr && *element != nullptr) {
+                                            Vector3f zero_size{ 0.0f, 0.0f, 0.0f };
+                                            sdk::call_object_func<void*>(*element, "set_Position", context, *element, &zero_size);
+                                        }
+                                    }
+                                }
+                            }
+#endif
 
                             gui_matrix = glm::scale(gui_matrix, Vector3f{ scale, scale, scale });
                         };
@@ -2871,17 +2954,16 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                         }
 
                         // ... RE7
-                        if (child != nullptr && utility::re_managed_object::get_field<wchar_t*>(child, "Name") == std::wstring_view(L"c_interact")) {
-                            static auto ui_world_pos_attach_typedef = sdk::find_type_definition("app.UIWorldPosAttach");
-                            auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
+#ifdef RE7
+                        auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
 
-                            // Fix the world position of the gui element
-                            if (world_pos_attach_comp != nullptr) {
-                                const auto& target_pos = *sdk::get_object_field<Vector4f>(world_pos_attach_comp, "_NowTargetPos");
-
-                                fix_2d_position(target_pos);
-                            }
+                        // Fix the world position of the gui element
+                        if (world_pos_attach_comp != nullptr) {
+                            const auto& target_pos = *sdk::get_object_field<Vector4f>(world_pos_attach_comp, "_NowTargetPos");
+                            
+                            fix_2d_position(target_pos);
                         }
+#endif
                     }
                 }
             }
@@ -3392,8 +3474,9 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_left_joystick_click_down = is_action_active(m_action_joystick_click, m_left_joystick);
     const auto is_right_joystick_click_down = is_action_active(m_action_joystick_click, m_right_joystick);
 
+    const auto is_minimap_down = is_action_active(m_action_minimap, m_left_joystick) || is_action_active(m_action_minimap, m_right_joystick);
     const auto is_left_a_button_down = is_action_active(m_action_a_button, m_left_joystick);
-    const auto is_left_b_button_down = is_action_active(m_action_b_button, m_left_joystick);
+    const auto is_left_b_button_down = !is_minimap_down && is_action_active(m_action_b_button, m_left_joystick);
     const auto is_right_a_button_down = is_action_active(m_action_a_button, m_right_joystick);
     const auto is_right_b_button_down = is_action_active(m_action_b_button, m_right_joystick);
 
@@ -3407,7 +3490,6 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_quickturn_down = is_action_active(m_action_re2_quickturn, m_left_joystick) || is_action_active(m_action_re2_quickturn, m_right_joystick);
     const auto is_reset_view_down = is_action_active(m_action_re2_reset_view, m_left_joystick) || is_action_active(m_action_re2_reset_view, m_right_joystick);
     const auto is_change_ammo_down = is_action_active(m_action_re2_change_ammo, m_left_joystick) || is_action_active(m_action_re2_change_ammo, m_right_joystick);
-    const auto is_minimap_down = is_action_active(m_action_minimap, m_left_joystick) || is_action_active(m_action_minimap, m_right_joystick);
 	const auto is_toggle_flashlight_down = is_action_active(m_action_re2_toggle_flashlight, m_left_joystick);
 
     const auto is_left_system_button_down = is_action_active(m_action_system_button, m_left_joystick);
@@ -3702,23 +3784,12 @@ void VR::openvr_input_to_re_engine() {
             m_last_controller_update = now;
         }
     }
-
-#ifdef RE7
-    if (get_runtime()->handle_pause) {
-        auto menu_manager = sdk::get_managed_singleton<::REManagedObject>("app.MenuManager");
-
-        if (menu_manager != nullptr) {
-            sdk::call_object_func<void*>(menu_manager, "openPauseMenu", sdk::get_thread_context(), menu_manager, 0);
-            get_runtime()->handle_pause = false;
-        }
-    }
-#endif
 }
 
 void VR::on_draw_ui() {
     // create VR tree entry in menu (imgui)
     if (get_runtime()->loaded) {
-        ImGui::SetNextTreeNodeOpen(false, ImGuiCond_::ImGuiCond_FirstUseEver);
+        ImGui::SetNextTreeNodeOpen(m_has_hw_scheduling, ImGuiCond_::ImGuiCond_FirstUseEver);
     } else {
         if (m_openvr->error && !m_openvr->dll_missing) {
             ImGui::SetNextTreeNodeOpen(true, ImGuiCond_::ImGuiCond_FirstUseEver);
@@ -3737,29 +3808,41 @@ void VR::on_draw_ui() {
         }
 
         if (runtime->error && runtime->dll_missing) {
-            ImGui::Text("%s not loaded: %s not found", runtime->name().data(), dll_name.data());
-            ImGui::Text("Please drop the %s file into the game's directory if you want to use VR", dll_name.data());
+            ImGui::TextWrapped("%s not loaded: %s not found", runtime->name().data(), dll_name.data());
+            ImGui::TextWrapped("Please drop the %s file into the game's directory if you want to use %s", dll_name.data(), runtime->name().data());
         } else if (runtime->error) {
-            ImGui::Text("%s not loaded: %s", runtime->name().data(), runtime->error->c_str());
+            ImGui::TextWrapped("%s not loaded: %s", runtime->name().data(), runtime->error->c_str());
         } else {
-            ImGui::Text("%s not loaded: Unknown error", runtime->name().data());
+            ImGui::TextWrapped("%s not loaded: Unknown error", runtime->name().data());
         }
+
+        ImGui::Separator();
     };
 
     display_error(m_openxr, "openxr_loader.dll");
     display_error(m_openvr, "openvr_api.dll");
 
     if (!get_runtime()->loaded) {
-        ImGui::Text("No runtime loaded.");
+        ImGui::TextWrapped("No runtime loaded.");
         return;
     }
 
-    // draw VR tree entry in menu (imgui)
-    ImGui::Text("VR Runtime: %s", get_runtime()->name().data());
-    ImGui::Text("Render Resolution: %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
+    ImGui::TextWrapped("Hardware scheduling: %s", m_has_hw_scheduling ? "Enabled" : "Disabled");
+
+    if (m_has_hw_scheduling) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+        ImGui::TextWrapped("WARNING: Hardware-accelerated GPU scheduling is enabled. This will cause the game to run slower.");
+        ImGui::TextWrapped("Go into your Windows Graphics settings and disable \"Hardware-accelerated GPU scheduling\"");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
+
+    ImGui::TextWrapped("VR Runtime: %s", get_runtime()->name().data());
+    ImGui::TextWrapped("Render Resolution: %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
 
     if (get_runtime()->is_openvr()) {
-        ImGui::Text("Resolution can be changed in SteamVR");
+        ImGui::TextWrapped("Resolution can be changed in SteamVR");
     } else if (get_runtime()->is_openxr()) {
         if (ImGui::TreeNode("Bindings")) {
             m_openxr->display_bindings_editor();
@@ -3832,6 +3915,14 @@ void VR::on_draw_ui() {
     m_force_dynamic_shadows_settings->draw("Force Enable Dynamic Shadows");
     m_allow_engine_overlays->draw("Allow Engine Overlays");
 
+    if (ImGui::TreeNode("Desktop Recording Fix")) {
+        ImGui::PushID("Desktop");
+        m_desktop_fix->draw("Enabled");
+        m_desktop_fix_skip_present->draw("Skip Present");
+        ImGui::PopID();
+        ImGui::TreePop();
+    }
+
     ImGui::Separator();
     ImGui::Text("Debug info");
     ImGui::Checkbox("Disable Projection Matrix Override", &m_disable_projection_matrix_override);
@@ -3898,6 +3989,10 @@ void VR::on_config_load(const utility::Config& cfg) {
         m_openxr->resolution_scale = m_resolution_scale->value();
         initialize_openxr_swapchains();
     }
+
+    if (m_motion_controls_inactivity_timer->value() <= 10.0f) {
+        m_motion_controls_inactivity_timer->value() = 30.0f;
+    }
 }
 
 void VR::on_config_save(utility::Config& cfg) {
@@ -3906,7 +4001,7 @@ void VR::on_config_save(utility::Config& cfg) {
     }
 }
 
-Vector4f VR::get_position(uint32_t index) {
+Vector4f VR::get_position(uint32_t index) const {
     if (index >= vr::k_unMaxTrackedDeviceCount) {
         return Vector4f{};
     }
@@ -3917,7 +4012,7 @@ Vector4f VR::get_position(uint32_t index) {
     return get_position_unsafe(index);
 }
 
-Vector4f VR::get_velocity(uint32_t index) {
+Vector4f VR::get_velocity(uint32_t index) const {
     if (index >= vr::k_unMaxTrackedDeviceCount) {
         return Vector4f{};
     }
@@ -3927,7 +4022,7 @@ Vector4f VR::get_velocity(uint32_t index) {
     return get_velocity_unsafe(index);
 }
 
-Vector4f VR::get_angular_velocity(uint32_t index) {
+Vector4f VR::get_angular_velocity(uint32_t index) const {
     if (index >= vr::k_unMaxTrackedDeviceCount) {
         return Vector4f{};
     }
@@ -3937,7 +4032,7 @@ Vector4f VR::get_angular_velocity(uint32_t index) {
     return get_angular_velocity_unsafe(index);
 }
 
-Vector4f VR::get_position_unsafe(uint32_t index) {
+Vector4f VR::get_position_unsafe(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return Vector4f{};
@@ -3967,7 +4062,7 @@ Vector4f VR::get_position_unsafe(uint32_t index) {
     return Vector4f{};
 }
 
-Vector4f VR::get_velocity_unsafe(uint32_t index) {
+Vector4f VR::get_velocity_unsafe(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return Vector4f{};
@@ -3993,7 +4088,7 @@ Vector4f VR::get_velocity_unsafe(uint32_t index) {
     return Vector4f{};
 }
 
-Vector4f VR::get_angular_velocity_unsafe(uint32_t index) {
+Vector4f VR::get_angular_velocity_unsafe(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return Vector4f{};
@@ -4019,7 +4114,7 @@ Vector4f VR::get_angular_velocity_unsafe(uint32_t index) {
     return Vector4f{};
 }
 
-Matrix4x4f VR::get_rotation(uint32_t index) {
+Matrix4x4f VR::get_rotation(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return glm::identity<Matrix4x4f>();
@@ -4052,7 +4147,7 @@ Matrix4x4f VR::get_rotation(uint32_t index) {
     return glm::identity<Matrix4x4f>();
 }
 
-Matrix4x4f VR::get_transform(uint32_t index) {
+Matrix4x4f VR::get_transform(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return glm::identity<Matrix4x4f>();
@@ -4087,7 +4182,7 @@ Matrix4x4f VR::get_transform(uint32_t index) {
     return glm::identity<Matrix4x4f>();
 }
 
-vr::HmdMatrix34_t VR::get_raw_transform(uint32_t index) {
+vr::HmdMatrix34_t VR::get_raw_transform(uint32_t index) const {
     if (get_runtime()->is_openvr()) {
         if (index >= vr::k_unMaxTrackedDeviceCount) {
             return vr::HmdMatrix34_t{};
@@ -4107,17 +4202,23 @@ bool VR::is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t 
     if (!get_runtime()->loaded) {
         return false;
     }
+    
+    bool active = false;
 
     if (get_runtime()->is_openvr()) {
         vr::InputDigitalActionData_t data{};
         vr::VRInput()->GetDigitalActionData(action, &data, sizeof(data), source);
 
-        return data.bActive && data.bState;
+        active = data.bActive && data.bState;
     } else if (get_runtime()->is_openxr()) {
-        return m_openxr->is_action_active((XrAction)action, (VRRuntime::Hand)source);
+        active = m_openxr->is_action_active((XrAction)action, (VRRuntime::Hand)source);
     }
 
-    return false;
+    if (!active && action == m_action_minimap) {
+        active = is_action_active(m_action_b_button, m_left_joystick) && is_hand_behind_head(VRRuntime::Hand::LEFT);
+    }
+
+    return active;
 }
 
 Vector2f VR::get_joystick_axis(vr::VRInputValueHandle_t handle) const {

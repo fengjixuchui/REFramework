@@ -3,7 +3,10 @@
 #include <forward_list>
 #include <deque>
 #include <algorithm>
+#include <regex>
 #include <json.hpp>
+
+#include <Zydis/Zydis.h>
 
 #include <windows.h>
 
@@ -12,6 +15,8 @@
 #include "utility/Module.hpp"
 #include "utility/Memory.hpp"
 #include "sdk/Renderer.hpp"
+
+#include "HookManager.hpp"
 
 #include "Genny.hpp"
 #include "GennyIda.hpp"
@@ -445,6 +450,8 @@ void ObjectExplorer::on_draw_dev_ui() {
         }
     }
 
+    ImGui::Checkbox("Search using Regex", &m_search_using_regex);
+
     if (m_do_init || ImGui::InputText("Type Name", m_type_name.data(), 256)) {
         m_displayed_types.clear();
 
@@ -452,14 +459,26 @@ void ObjectExplorer::on_draw_dev_ui() {
             m_displayed_types.push_back(t);
         }
         else {
-            // Search the list for a partial match instead
-            for (auto i = std::find_if(m_sorted_types.begin(), m_sorted_types.end(), [this](const auto& a) { return a.find(m_type_name.data()) != std::string::npos; });
-                i != m_sorted_types.end();
-                i = std::find_if(i + 1, m_sorted_types.end(), [this](const auto& a) { return a.find(m_type_name.data()) != std::string::npos; }))
-            {
-                if (auto t = get_type(*i)) {
-                    m_displayed_types.push_back(t);
+            std::function<bool(const std::string&)> search_algo{};
+
+            if (m_search_using_regex) {
+                search_algo = [this](const auto& a) { return std::regex_search(a, std::regex{ m_type_name.data() }); };
+            } else {
+                search_algo = [this](const auto& a) { return a.find(m_type_name.data()) != std::string::npos; };
+            }
+
+            try {
+                // Search the list for a partial match instead
+                for (auto i = std::find_if(m_sorted_types.begin(), m_sorted_types.end(), search_algo);
+                    i != m_sorted_types.end();
+                    i = std::find_if(i + 1, m_sorted_types.end(), search_algo))
+                {
+                    if (auto t = get_type(*i)) {
+                        m_displayed_types.push_back(t);
+                    }
                 }
+            } catch (...) {
+
             }
         }
     }
@@ -499,24 +518,44 @@ void ObjectExplorer::on_draw_dev_ui() {
 }
 
 void ObjectExplorer::on_frame() {
-    if (m_pinned_objects.empty()) {
-        return;
+    if (!m_pinned_objects.empty()) {
+        bool open = true;
+
+        // on_frame is just going to be a way to display
+        // the pinned objects in a separate window
+
+        ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_::ImGuiCond_Once);
+        if (ImGui::Begin("Pinned objects", &open)) {
+            display_pins();
+
+            ImGui::End();
+        }
+
+        if (!open) {
+            m_pinned_objects.clear();
+        }
     }
 
-    bool open = true;
+    if (!m_hooked_methods.empty()) {
+        bool open = true;
 
-    // on_frame is just going to be a way to display
-    // the pinned objects in a separate window
+        // on_frame is just going to be a way to display
+        // the pinned objects in a separate window
 
-    ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_::ImGuiCond_Once);
-    if (ImGui::Begin("Pinned objects", &open)) {
-        display_pins();
+        ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_::ImGuiCond_Once);
+        if (ImGui::Begin("Hooked methods", &open)) {
+            display_hooks();
 
-        ImGui::End();
-    }
+            ImGui::End();
+        }
 
-    if (!open) {
-        m_pinned_objects.clear();
+        if (!open) {
+            for (auto& h : m_hooked_methods) {
+                g_hookman.remove(h.method, h.hook_id);
+            }
+
+            m_hooked_methods.clear();
+        }
     }
 }
 
@@ -527,6 +566,19 @@ void ObjectExplorer::display_pins() {
 
         if (made_node) {
             handle_address(pinned_obj.address);
+            ImGui::TreePop();
+        }
+    }
+}
+
+void ObjectExplorer::display_hooks() {
+    for (auto& h : m_hooked_methods) {
+        const auto made_node = ImGui::TreeNode(h.name.c_str());
+        method_context_menu(h.method, h.name);
+
+        if (made_node) {
+            ImGui::Checkbox("Skip function call", &h.skip);
+            ImGui::TextWrapped("Call count: %i", h.call_count);
             ImGui::TreePop();
         }
     }
@@ -778,7 +830,7 @@ void ObjectExplorer::generate_sdk() {
             rsz_entry["static"] = is_static;
             rsz_entry["offset_from_fieldptr"] = (std::stringstream{} << "0x" << std::hex << sequence.offset).str();
 
-#ifdef RE7
+#if TDB_VER <= 49
             rsz_entry["potential_name"] = sequence.prop->name;
 #endif
 
@@ -864,7 +916,7 @@ void ObjectExplorer::generate_sdk() {
 
         // Parameters
 #if TDB_VER >= 69
-        auto param_ids = Address{ tdb->bytePool }.get(param_list).as<REParamList*>();
+        auto param_ids = Address{ tdb->bytePool }.get(param_list).as<sdk::ParamList*>();
         const auto num_params = param_ids->numParams;
         const auto invoke_id = param_ids->invokeID;
 #else
@@ -1475,7 +1527,7 @@ void ObjectExplorer::generate_sdk() {
     // Try and guess what the field names are for the RSZ entries
     // In RE7, the deserializer points to the reflection property,
     // so we can just grab the name from there instead of comparing field offsets.
-#ifndef RE7
+#if TDB_VER > 49
     for (auto& t : g_itypedb) {
         auto tdef = t.second->t;
 
@@ -1572,7 +1624,7 @@ void ObjectExplorer::generate_sdk() {
         g_class_set.insert(t->name);
     }
 
-#ifndef RE7
+#if TDB_VER > 49
     for (const auto& name : m_sorted_types) {
         auto t = get_type(name);
 
@@ -1655,7 +1707,7 @@ void ObjectExplorer::generate_sdk() {
         auto methods = fields->methods;
 
 // BORKED RIGHT NOW
-#ifndef RE7
+#if TDB_VER > 49
         // Generate Methods
         if (fields->methods != nullptr) {
             for (auto i = 0; i < num_methods; ++i) {
@@ -1915,7 +1967,7 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
                 additional_text = "ValType";
                 break;
             case via::clr::VMObjType::Object: {
-#ifndef RE7
+#if TDB_VER > 49
                 additional_text = object->info->classInfo->type->name;
 #else
                 additional_text = object->info->type->name;
@@ -1988,7 +2040,7 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
 
                         const auto contained_type = utility::re_array::get_contained_type(arr);
 
-#ifndef RE7
+#if TDB_VER > 49
                         fake_obj.info = arr->containedType->parentInfo;
 #else
                         fake_obj.info = (::REObjectInfo*)&sdk::VM::get()->types[contained_type->get_index()];
@@ -2019,7 +2071,7 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
         }
 
         if (ImGui::TreeNode(real_address.ptr(), "AutoGenerated Types")) {
-#ifndef RE7
+#if TDB_VER > 49
             auto type_info = object->info->classInfo->type;
 #else
             auto type_info = object->info->type;
@@ -2226,7 +2278,7 @@ void ObjectExplorer::handle_type(REManagedObject* obj, REType* t) {
         // Display type flags
         if (type_info->classInfo != nullptr) {
             if (stretched_tree_node("TypeFlags")) {
-#ifndef RE7
+#if TDB_VER > 49
                 display_enum_value("via.clr.TypeFlag", (int64_t)type_info->classInfo->typeFlags);
 #else
                 display_enum_value("via.clr.TypeFlag", 0);
@@ -2622,17 +2674,26 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
             std::stringstream ss{};
             ss << method_name << "(";
 
+            std::stringstream ss_context{};
+            ss_context << method_name << "(";
+
             for (auto i = 0; i < method_param_types.size(); i++) {
                 if (i > 0) {
                     ss << ", ";
+                    ss_context << ", ";
                 }
                 ss << method_param_types[i]->get_full_name() << " " << method_param_names[i];
+                ss_context << method_param_types[i]->get_full_name();
             }
 
             ss << ")";
+            ss_context << ")";
             const auto method_prototype = ss.str();
+            const auto method_prototype_context = ss_context.str();
 
-            const auto made_node = widget_with_context(method_ptr, method_prototype, [&]() { return stretched_tree_node(&m, "%s", method_return_type_name.c_str()); });
+            const auto made_node = stretched_tree_node(&m, "%s", method_return_type_name.c_str());
+            method_context_menu(&m, method_prototype_context);
+            
             const auto tree_hovered = ImGui::IsItemHovered();
 
             // Draw the method name with a color
@@ -2727,6 +2788,66 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
 
                         ImGui::EndTable();
                     }
+                }
+
+                if (ImGui::BeginTable("##disassembly", 3,  ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Address");
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Bytes");
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Instruction");
+
+                    // Show a short disassembly of the method
+                    ZydisDecoder decoder;
+                    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+                    ZydisDecodedInstruction is{};
+                    ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT_VISIBLE]{};
+
+                    ZydisFormatter formatter;
+                    ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+
+                    auto ip = (uintptr_t)method_ptr;
+
+                    for (auto i = 0; i < 10; i++) {
+                        if (ZYAN_FAILED(
+                            ZydisDecoderDecodeFull(
+                                &decoder, (void*)ip, 256, &is,
+                                ops, ZYDIS_MAX_OPERAND_COUNT_VISIBLE, ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY))) 
+                        {
+                            break;
+                        }
+
+                        char buffer[256]{};
+                        ZydisFormatterFormatInstruction(&formatter, &is, ops, is.operand_count_visible, buffer, sizeof(buffer), ip);
+
+                        ImGui::TableNextColumn();
+                        ImGui::Text("0x%p", ip);
+
+                        ImGui::TableNextColumn();
+                        // show the bytes
+                        for (auto j = 0; j < is.length; j++) {
+                            if (j > 0) {
+                                ImGui::SameLine();
+                            }
+
+                            ImGui::Text("%02X", ((uint8_t*)ip)[j]);
+                        }
+
+                        ImGui::TableNextColumn();
+                        ImGui::Text(buffer);
+
+                        ip += is.length;
+
+                        // check if ret or int3 and stop
+                        if (is.mnemonic == ZYDIS_MNEMONIC_RET || is.mnemonic == ZYDIS_MNEMONIC_INT3) {
+                            break;
+                        }
+                    }
+
+                    ImGui::EndTable();
                 }
 
                 ImGui::TreePop();
@@ -3259,7 +3380,7 @@ bool ObjectExplorer::widget_with_context(void* address, const std::string& name,
     return ret;
 }
 
-void ObjectExplorer::context_menu(void* address, std::optional<std::string> name) {
+void ObjectExplorer::context_menu(void* address, std::optional<std::string> name, std::optional<std::function<void()>> additional_context) {
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::Selectable("Copy Address")) {
             std::stringstream ss;
@@ -3313,8 +3434,57 @@ void ObjectExplorer::context_menu(void* address, std::optional<std::string> name
             }
         }
 
+        if (additional_context) {
+            (*additional_context)();
+        }
+
         ImGui::EndPopup();
     }
+}
+
+void ObjectExplorer::method_context_menu(sdk::REMethodDefinition* method, std::optional<std::string> name) {
+    auto additional_ctx = [&]() {
+        auto it = std::find_if(m_hooked_methods.begin(), m_hooked_methods.end(), [method](auto& hook) { return hook.method == method; });
+
+        if (it == m_hooked_methods.end()) {
+            if (ImGui::Selectable("Hook")) {
+                auto& hooked = m_hooked_methods.emplace_back();
+
+                using namespace asmjit;
+                using namespace asmjit::x86;
+
+                CodeHolder code{};
+                code.init(m_jit_runtime.environment());
+
+                Assembler a{&code};
+
+                a.mov(r9, method);
+                a.movabs(r10, &ObjectExplorer::pre_hooked_method);
+                a.jmp(r10);
+
+                m_jit_runtime.add(&hooked.jitted_function, &code);
+
+                using MT = HookManager::PreHookResult(*)(std::vector<uintptr_t>& args, std::vector<sdk::RETypeDefinition*>& arg_tys);
+
+                hooked.method = method;
+
+                if (name) {
+                    hooked.name = method->get_declaring_type()->get_full_name() + "." + *name;
+                } else {
+                    hooked.name = method->get_declaring_type()->get_full_name() + "." + method->get_name();
+                }
+                
+                hooked.hook_id = g_hookman.add(method, (MT)hooked.jitted_function, nullptr);
+            }
+        } else {
+            if (ImGui::Selectable("Unhook")) {
+                g_hookman.remove(it->method, it->hook_id);
+                m_hooked_methods.erase(it);
+            }
+        }
+    };
+
+    context_menu(method->get_function(), name, additional_ctx);
 }
 
 void ObjectExplorer::make_same_line_text(std::string_view text, const ImVec4& color) {
@@ -3382,7 +3552,7 @@ void ObjectExplorer::populate_classes() {
 }
 
 void ObjectExplorer::populate_enums() {
-#ifndef RE7
+#if TDB_VER > 49
 
     std::ofstream out_file("Enums_Internal.hpp");
 
@@ -3563,29 +3733,87 @@ bool ObjectExplorer::is_filtered_type(std::string name) {
     return false;
 }
 
-bool ObjectExplorer::is_filtered_method(sdk::REMethodDefinition& m) {
+bool ObjectExplorer::is_filtered_method(sdk::REMethodDefinition& m) try {
     const auto method_name = m.get_name();
     const auto name = std::string_view{m_type_member.data()};
     if (name.empty()) {
         return true;
     }
-    if (std::string_view{method_name}.find(name) != std::string_view::npos) {
-        return true;
+
+    if (!m_search_using_regex) {
+        if (std::string_view{method_name}.find(name) != std::string_view::npos) {
+            return true;
+        }
+    } else {
+        if (std::regex_search(method_name, std::regex{name.data()})) {
+            return true;
+        }
     }
+
     const auto method_return_type = m.get_return_type();
     const std::string method_return_type_name = method_return_type != nullptr ? method_return_type->get_full_name() : "";
-    if (method_return_type_name.find(name) != std::string::npos) {
-        return true;
+
+    if (!m_search_using_regex) {
+        if (method_return_type_name.find(name) != std::string::npos) {
+            return true;
+        }
+    } else {
+        if (std::regex_search(method_return_type_name, std::regex{name.data()})) {
+            return true;
+        }
     }
+
+    std::function<bool(std::string_view a)> search_algo_params{};
+
+    if (!m_search_using_regex) {
+        search_algo_params = [name](std::string_view a) { return a.find(name) != std::string_view::npos; };
+    } else {
+        search_algo_params = [name](std::string_view a) { return std::regex_search(a.data(), std::regex{name.data()}); };
+    }
+
     const auto method_param_names = m.get_param_names();
-    if (auto i = std::find_if(method_param_names.begin(), method_param_names.end(), [name](std::string_view a) { return a.find(name) != std::string_view::npos; });
+    if (auto i = std::find_if(method_param_names.begin(), method_param_names.end(), search_algo_params);
         i != method_param_names.end()) {
         return true;
     }
+
+    std::function<bool(sdk::RETypeDefinition* a)> search_algo_types{};
+
+    if (!m_search_using_regex) {
+        search_algo_types = [name](sdk::RETypeDefinition* a) { return std::string_view{a->get_name()}.find(name) != std::string_view::npos; };
+    } else {
+        search_algo_types = [name](sdk::RETypeDefinition* a) { return std::regex_search(a->get_name(), std::regex{name.data()}); };
+    }
+
     const auto method_param_types = m.get_param_types();
-    if (auto i = std::find_if(method_param_types.begin(), method_param_types.end(), [name](auto a) { return std::string_view{a->get_name()}.find(name) != std::string_view::npos; });
+    if (auto i = std::find_if(method_param_types.begin(), method_param_types.end(), search_algo_types);
         i != method_param_types.end()) {
         return true;
     }
     return false;
+} catch (...) {
+    return false;
+}
+
+HookManager::PreHookResult ObjectExplorer::pre_hooked_method_internal(std::vector<uintptr_t>& args, std::vector<sdk::RETypeDefinition*>& arg_tys, void* reserved, sdk::REMethodDefinition* method) {
+    auto it = std::find_if(m_hooked_methods.begin(), m_hooked_methods.end(), [method](auto& a) { return a.method == method; });
+
+    if (it == m_hooked_methods.end()) {
+        return HookManager::PreHookResult::CALL_ORIGINAL;
+    }
+
+    auto& hooked_method = *it;
+    ++hooked_method.call_count;
+
+    auto result = HookManager::PreHookResult::CALL_ORIGINAL;
+
+    if (hooked_method.skip) {
+        result = HookManager::PreHookResult::SKIP_ORIGINAL;
+    }
+
+    return result;
+}
+
+HookManager::PreHookResult ObjectExplorer::pre_hooked_method(std::vector<uintptr_t>& args, std::vector<sdk::RETypeDefinition*>& arg_tys, void* reserved, sdk::REMethodDefinition* method) {
+    return ObjectExplorer::get()->pre_hooked_method_internal(args, arg_tys, reserved, method);
 }
