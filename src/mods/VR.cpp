@@ -82,18 +82,25 @@ float* VR::get_size_hook(REManagedObject* scene_view, float* result) {
     auto regenny_view = (regenny::via::SceneView*)scene_view;
     auto window = regenny_view->window;
 
-    // Force the display to stretch to the window size
-#if not defined(RE7) || TDB_VER <= 49
-    static auto is_sunbreak = utility::get_module_path(utility::get_executable())->find("MHRiseSunbreakDemo") != std::string::npos;
+    static auto via_scene_view = sdk::find_type_definition("via.SceneView");
+    static auto set_display_type_method = via_scene_view->get_method("set_DisplayType");
 
-    if (is_sunbreak) {
-        *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
+    // Force the display to stretch to the window size
+    if (set_display_type_method != nullptr) {
+        set_display_type_method->call(sdk::get_thread_context(), regenny_view, via::DisplayType::Fit);
     } else {
-        regenny_view->display_type = regenny::via::DisplayType::Fit;
-    }
+#if not defined(RE7) || TDB_VER <= 49
+        static auto is_sunbreak = utility::get_module_path(utility::get_executable())->find("MHRiseSunbreakDemo") != std::string::npos;
+
+        if (is_sunbreak) {
+            *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
+        } else {
+            regenny_view->display_type = regenny::via::DisplayType::Fit;
+        }
 #else
-    *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
+        *(regenny::via::DisplayType*)((uintptr_t)&regenny_view->display_type + 4) = regenny::via::DisplayType::Fit;
 #endif
+    }
 
     auto wanted_width = 0.0f;
     auto wanted_height = 0.0f;
@@ -381,7 +388,7 @@ void VR::RenderLayerHook<sdk::renderer::layer::Overlay>::draw(sdk::renderer::lay
     // NOT RE3
     // for some reason RE3 has weird issues with the overlay rendering
     // causing double vision
-#if TDB_VER < 70 or (not defined(RE3) and not defined(RE2) and not defined(RE7))
+#if (TDB_VER < 70 and not defined(RE3)) or (TDB_VER >= 70 and (not defined(RE3) and not defined(RE2) and not defined(RE7)))
     if (mod->m_allow_engine_overlays->value()) {
         original_func(layer, render_ctx);
     }
