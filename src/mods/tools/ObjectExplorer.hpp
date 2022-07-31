@@ -34,6 +34,12 @@ struct RETypeDefinition;
 namespace renderer {
 class RenderLayer;
 }
+
+namespace behaviortree {
+class BehaviorTree;
+class CoreHandle;
+class TreeNode;
+}
 }
 
 namespace genny {
@@ -148,11 +154,15 @@ private:
     void export_deserializer_chain(nlohmann::json& il2cpp_dump, sdk::RETypeDB* tdb, REType* t, std::optional<std::string> real_name = std::nullopt);
 #endif
     void generate_sdk();
+    void report_sdk_dump_progress(float progress);
 
     void handle_game_object(REGameObject* game_object);
     void handle_component(REComponent* component);
     void handle_transform(RETransform* transform);
     void handle_render_layer(sdk::renderer::RenderLayer* layer);
+    void handle_behavior_tree(sdk::behaviortree::BehaviorTree* bhvt);
+    void handle_behavior_tree_core_handle(sdk::behaviortree::BehaviorTree* bhvt, sdk::behaviortree::CoreHandle* bhvt_core_handle, uint32_t tree_idx);
+    void handle_behavior_tree_node(sdk::behaviortree::BehaviorTree* bhvt, sdk::behaviortree::TreeNode* node, uint32_t tree_idx);
     void handle_type(REManagedObject* obj, REType* t);
 
     void display_enum_value(std::string_view name, int64_t value);
@@ -184,6 +194,7 @@ private:
 
     bool is_filtered_type(std::string name);
     bool is_filtered_method(sdk::REMethodDefinition& m);
+    bool is_filtered_field(sdk::REField& f);
 
     template <typename T, typename... Args>
     bool stretched_tree_node(T id, Args... args) {
@@ -241,6 +252,7 @@ private:
     bool m_search_using_regex{false};
     std::string m_type_name{"via.typeinfo.TypeInfo"};
     std::string m_type_member{""};
+    std::string m_type_field{""};
     std::string m_object_address{ "0" };
     std::string m_add_component_name{ "via.Component" };
     std::chrono::system_clock::time_point m_next_refresh;
@@ -259,11 +271,31 @@ private:
     std::unordered_map<std::string, REType*> m_types;
     std::vector<std::string> m_sorted_types;
 
+    std::mutex m_enum_mutex;
+
     // Types currently being displayed
     std::vector<REType*> m_displayed_types;
 
     std::vector<uint8_t> m_module_chunk{};
 
     bool m_do_init{ true };
+
+    enum class SdkDumpStage {
+        NONE = -1,
+        DUMP_INITIALIZATION,
+        DUMP_TYPES,
+        DUMP_RSZ,
+        DUMP_METHODS,
+        DUMP_FIELDS,
+        DUMP_PROPERTIES,
+        DUMP_RSZ_2,
+        DUMP_DESERIALIZER_CHAIN,
+        DUMP_NON_TDB_TYPES,
+        GENERATE_SDK
+    };
+
+    std::atomic<bool> m_dumping_sdk{ false };
+    std::atomic<float> m_sdk_dump_progress{ 0.0f };
+    std::atomic<SdkDumpStage> m_sdk_dump_stage{ SdkDumpStage::NONE };
 };
 

@@ -11,6 +11,7 @@ extern "C" {
 };
 
 #include <imgui.h>
+#include <ImGuizmo.h>
 #include "re2-imgui/font_robotomedium.hpp"
 #include "re2-imgui/imgui_impl_dx11.h"
 #include "re2-imgui/imgui_impl_dx12.h"
@@ -19,6 +20,7 @@ extern "C" {
 #include "utility/Module.hpp"
 #include "utility/Patch.hpp"
 #include "utility/Scan.hpp"
+#include "utility/Thread.hpp"
 
 #include "Mods.hpp"
 #include "mods/PluginLoader.hpp"
@@ -208,6 +210,14 @@ REFramework::REFramework(HMODULE reframework_module)
         }
     }
 
+#ifdef MHRISE
+    utility::load_module_from_current_directory(L"openvr_api.dll");
+    utility::load_module_from_current_directory(L"openxr_loader.dll");
+    LoadLibraryA("dxgi.dll");
+    LoadLibraryA("d3d11.dll");
+    utility::spoof_module_paths_in_exe_dir();
+#endif
+
 #ifdef RE8
     // auto startup_patch_addr = Address{m_game_module}.get(0x3E69E50);
     auto startup_patch_addr = utility::scan(m_game_module, "40 53 57 48 83 ec 28 48 83 b9 ? ? ? ? 00");
@@ -343,7 +353,7 @@ REFramework::~REFramework() {
     }
 }
 
-void REFramework::run_imgui_frame() {
+void REFramework::run_imgui_frame(bool from_present) {
     std::scoped_lock _{ m_imgui_mtx };
 
     m_has_frame = false;
@@ -359,17 +369,23 @@ void REFramework::run_imgui_frame() {
     
     ImGui_ImplWin32_NewFrame();
 
-    if (is_init_ok) {
+    // from_present is so we don't accidentally
+    // run script/game code within the present thread.
+    if (is_init_ok && !from_present) {
         // Run mod frame callbacks.
         m_mods->on_pre_imgui_frame();
     }
 
     ImGui::NewFrame();
 
-    call_on_frame();
+    if (!from_present) {
+        call_on_frame();
+    }
 
     draw_ui();
     m_last_draw_ui = m_draw_ui;
+
+    IMGUIZMO_NAMESPACE::BeginFrame();
 
     ImGui::EndFrame();
     ImGui::Render();
@@ -395,9 +411,17 @@ void REFramework::on_frame_d3d11() {
         m_initialized = true;
         return;
     }
-    
+
     if (m_message_hook_requested) {
         initialize_windows_message_hook();
+    }
+
+    auto device = m_d3d11_hook->get_device();
+    
+    if (device == nullptr) {
+        spdlog::error("D3D11 device was null when it shouldn't be, returning...");
+        m_initialized = false;
+        return;
     }
 
     const bool is_init_ok = m_error.empty() && m_game_data_initialized;
@@ -418,7 +442,7 @@ void REFramework::on_frame_d3d11() {
 
             ImGui_ImplDX11_NewFrame();
             // hooks don't run until after initialization, so we just render the imgui window while initalizing.
-            run_imgui_frame();
+            run_imgui_frame(true);
         } else {   
             return;
         }
@@ -474,7 +498,6 @@ void REFramework::on_frame_d3d12() {
     m_renderer_type = RendererType::D3D12;
 
     auto command_queue = m_d3d12_hook->get_command_queue();
-
     //spdlog::debug("on_frame (D3D12)");
     
     if (!m_initialized) {
@@ -497,6 +520,14 @@ void REFramework::on_frame_d3d12() {
         initialize_windows_message_hook();
     }
 
+    auto device = m_d3d12_hook->get_device();
+
+    if (device == nullptr) {
+        spdlog::error("D3D12 Device was null when it shouldn't be, returning...");
+        m_initialized = false;
+        return;
+    }
+
     const bool is_init_ok = m_error.empty() && m_game_data_initialized;
 
     if (is_init_ok) {
@@ -515,7 +546,7 @@ void REFramework::on_frame_d3d12() {
 
             ImGui_ImplDX12_NewFrame();
             // hooks don't run until after initialization, so we just render the imgui window while initalizing.
-            run_imgui_frame();
+            run_imgui_frame(true);
         } else {   
             return;
         }
@@ -542,7 +573,6 @@ void REFramework::on_frame_d3d12() {
     m_d3d12.cmd_list->ResourceBarrier(1, &barrier);
 
     float clear_color[]{0.0f, 0.0f, 0.0f, 0.0f};
-    auto device = m_d3d12_hook->get_device();
     D3D12_CPU_DESCRIPTOR_HANDLE rts[1]{};
     m_d3d12.cmd_list->ClearRenderTargetView(m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI), clear_color, 0, nullptr);
     rts[0] = m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI);
@@ -927,7 +957,7 @@ void REFramework::draw_about() {
             std::string text;
         };
 
-        static std::array<License, 12> licenses{
+        static std::array<License, 13> licenses{
             License{ "glm", license::glm },
             License{ "imgui", license::imgui },
             License{ "minhook", license::minhook },
@@ -940,6 +970,7 @@ void REFramework::draw_about() {
             License{ "asmjit", license::asmjit },
             License{ "zydis", utility::narrow(license::zydis) },
             License{ "openxr", license::openxr },
+            License{ "imguizmo", license::imguizmo }
         };
 
         for (const auto& license : licenses) {
@@ -949,6 +980,50 @@ void REFramework::draw_about() {
         }
 
         ImGui::TreePop();
+    }
+
+    ImGui::Separator();
+
+    if (m_game_data_initialized && m_error.empty()) {
+        try {
+            static auto version_t = sdk::find_type_definition("via.version");
+            static std::string clean_version{};
+            static std::string engine_config{};
+            static auto tdb_version = sdk::RETypeDB::get()->version;
+
+            if (version_t != nullptr && clean_version.empty()) {
+                auto m = version_t->get_method("getPrettyVersionString");
+
+                if (m != nullptr) {
+                    auto pretty_string = m->call<::SystemString*>(sdk::get_thread_context(), nullptr);
+
+                    if (pretty_string != nullptr) {
+                        clean_version = utility::re_string::get_string(pretty_string);
+                    }
+                }
+            }
+
+            if (version_t != nullptr && engine_config.empty()) {
+                auto m = version_t->get_method("getConfigName");
+
+                if (m != nullptr) {
+                    auto config_name = m->call<::SystemString*>(sdk::get_thread_context(), nullptr);
+
+                    if (config_name != nullptr) {
+                        engine_config = utility::re_string::get_string(config_name);
+                    }
+                }
+            }
+
+            ImGui::Text("Engine information");
+            ImGui::Text(" Config: %s", engine_config.c_str());
+            ImGui::Text(" Version: %s", clean_version.c_str());
+            ImGui::Text(" TDB Version: %i", tdb_version);
+        } catch(...) {
+            ImGui::Text("Unable to determine engine version.");
+        }
+    } else {
+        ImGui::Text("Unable to determine engine version.");
     }
 
     ImGui::TreePop();
@@ -974,6 +1049,9 @@ void REFramework::set_imgui_style() noexcept {
 
     // Navigatation highlight
     colors[ImGuiCol_NavHighlight] = ImVec4{0.3f, 0.305f, 0.31f, 1.0f};
+
+    // Progress Bar
+    colors[ImGuiCol_PlotHistogram] = ImVec4{0.3f, 0.305f, 0.31f, 1.0f};
 
     // Headers
     colors[ImGuiCol_Header] = ImVec4{0.2f, 0.205f, 0.21f, 1.0f};
@@ -1171,22 +1249,36 @@ bool REFramework::initialize() {
 
         // Game specific initialization stuff
         std::thread init_thread([this]() {
-            reframework::initialize_sdk();
-            m_mods = std::make_unique<Mods>();
+            try {
+#ifdef MHRISE
+                utility::spoof_module_paths_in_exe_dir();
+#endif
+                reframework::initialize_sdk();
+                m_mods = std::make_unique<Mods>();
 
-            auto e = m_mods->on_initialize();
+                auto e = m_mods->on_initialize();
 
-            if (e) {
-                if (e->empty()) {
-                    m_error = "An unknown error has occurred.";
-                } else {
-                    m_error = *e;
+                if (e) {
+                    if (e->empty()) {
+                        m_error = "An unknown error has occurred.";
+                    } else {
+                        m_error = *e;
+                    }
+
+                    spdlog::error("Initialization of mods failed. Reason: {}", m_error);
                 }
 
-                spdlog::error("Initialization of mods failed. Reason: {}", m_error);
+                m_game_data_initialized = true;
+            } catch(...) {
+                m_error = "An exception has occurred during initialization.";
+                m_game_data_initialized = true;
+                spdlog::error("Initialization of mods failed. Reason: exception thrown.");
             }
 
-            m_game_data_initialized = true;
+#ifdef MHRISE
+            utility::spoof_module_paths_in_exe_dir();
+#endif
+            spdlog::info("Game data initialization thread finished");
         });
 
         init_thread.detach();

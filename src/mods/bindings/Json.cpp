@@ -19,8 +19,17 @@ json encode_any(sol::object obj) {
         return json{};
     case sol::type::boolean:
         return obj.as<bool>();
-    case sol::type::number:
+    case sol::type::number: {
+        obj.push();
+        if (lua_isinteger(obj.lua_state(), -1)) {
+            obj.pop();
+            return obj.as<int64_t>();
+        }
+        
+        obj.pop();
+        
         return obj.as<double>();
+    }
     case sol::type::string:
         return obj.as<std::string>();
     case sol::type::table: {
@@ -123,6 +132,10 @@ sol::object load_file(sol::this_state l, const std::string& filepath) try {
         throw std::runtime_error{"json.load_file does not allow access to parent directories"};
     }
 
+    if (std::filesystem::path(filepath).is_absolute()) {
+        throw std::runtime_error{"json.load_file does not allow absolute paths"};
+    }
+
     const auto j = json::parse(std::ifstream{detail::get_datadir() / filepath});
     return detail::decode_any(l, j);
 } catch (const json::exception& e) {
@@ -139,6 +152,10 @@ bool dump_file(const std::string& filepath, sol::object obj, sol::object indent_
 
     if (filepath.find("..") != std::string::npos) {
         throw std::runtime_error{"json.dump_file does not allow access to parent directories"};
+    }
+
+    if (std::filesystem::path(filepath).is_absolute()) {
+        throw std::runtime_error{"json.dump_file does not allow absolute paths"};
     }
 
     auto path = detail::get_datadir() / filepath;

@@ -1,3 +1,5 @@
+#include <mutex>
+
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <spdlog/spdlog.h>
@@ -5,6 +7,10 @@
 #include "Thread.hpp"
 
 namespace utility {
+namespace detail {
+std::mutex g_suspend_mutex{};
+}
+
 ThreadStates suspend_threads() {
     ThreadStates states{};
 
@@ -32,7 +38,7 @@ ThreadStates suspend_threads() {
             if (thread_handle != nullptr && snapshot_handle != INVALID_HANDLE_VALUE) {
                 auto state = std::make_unique<ThreadState>();
 
-                spdlog::info("Suspending {:i}", te.th32ThreadID);
+                spdlog::info("Suspending {}", (uint32_t)te.th32ThreadID);
 
                 state->thread_id = te.th32ThreadID;
                 state->suspended = SuspendThread(thread_handle) > 0;
@@ -58,5 +64,20 @@ void resume_threads(const ThreadStates& states) {
             CloseHandle(thread_handle);
         }
     }
+}
+
+ThreadSuspender::ThreadSuspender()  {
+    detail::g_suspend_mutex.lock();
+    states = suspend_threads();
+}
+
+ThreadSuspender::~ThreadSuspender() {
+    resume_threads(states);
+    detail::g_suspend_mutex.unlock();
+}
+
+void ThreadSuspender::resume() {
+    resume_threads(states);
+    states.clear();
 }
 }

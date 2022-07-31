@@ -4,8 +4,11 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <string_view>
+#include <functional>
 
 #include <Windows.h>
+#include <winternl.h>
 
 #include "Address.hpp"
 
@@ -21,6 +24,8 @@ namespace utility {
 
     std::optional<std::string> get_module_path(HMODULE module);
     std::optional<std::string> get_module_directory(HMODULE module);
+    std::optional<std::wstring> get_module_directoryw(HMODULE module);
+    HMODULE load_module_from_current_directory(const std::wstring& module);
 
     std::vector<uint8_t> read_module_from_disk(HMODULE module);
 
@@ -34,4 +39,11 @@ namespace utility {
     std::optional<uintptr_t> ptr_from_rva(uint8_t* dll, uintptr_t rva);
 
     HMODULE get_executable();
+    HMODULE unlink(HMODULE module);
+    HMODULE safe_unlink(HMODULE module);
+
+    void foreach_module(std::function<void(LIST_ENTRY*, _LDR_DATA_TABLE_ENTRY*)> callback);
+    size_t get_module_count(std::wstring_view name);
+    void unlink_duplicate_modules();
+    void spoof_module_paths_in_exe_dir();
 }

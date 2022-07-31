@@ -6,8 +6,10 @@
 #include "REFramework.hpp"
 #include "reframework/API.hpp"
 #include "utility/String.hpp"
+#include "utility/Module.hpp"
 
 #include "sdk/ResourceManager.hpp"
+#include "sdk/Memory.hpp"
 
 #include "APIProxy.hpp"
 #include "ScriptRunner.hpp"
@@ -175,6 +177,8 @@ REFrameworkSDKFunctions g_sdk_functions {
             ignore_jmp);
     },
     [](REFrameworkMethodHandle fn, unsigned int id) { g_hookman.remove((sdk::REMethodDefinition*)fn, (HookManager::HookId)id); },
+    &sdk::via::memory::allocate,
+    &sdk::via::memory::deallocate
 };
 
 #define RETYPEDEF(var) ((sdk::RETypeDefinition*)var)
@@ -625,12 +629,23 @@ std::optional<std::string> PluginLoader::on_initialize() {
         auto required_version_fn = (REFPluginRequiredVersionFn)GetProcAddress(mod, "reframework_plugin_required_version");
 
         if (required_version_fn == nullptr) {
+            spdlog::info("[PluginLoader] {} has no reframework_plugin_required_version function, skipping...", name);
+
             ++it;
             continue;
         }
 
         REFrameworkPluginVersion required_version{};
-        required_version_fn(&required_version);
+
+        try {
+            required_version_fn(&required_version);
+        } catch(...) {
+            spdlog::error("[PluginLoader] {} has an exception in reframework_plugin_required_version, skipping...", name);
+            m_plugin_load_errors.emplace(name, "Exception occurred in reframework_plugin_required_version");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
 
         spdlog::info(
             "[PluginLoader] {} requires version {}.{}.{}", name, required_version.major, required_version.minor, required_version.patch);
@@ -679,10 +694,17 @@ std::optional<std::string> PluginLoader::on_initialize() {
         }
 
         spdlog::info("[PluginLoader] Initializing {}...", name);
-
-        if (!init_fn(&g_plugin_initialize_param)) {
-            spdlog::error("[PluginLoader] Failed to initialize {}", name);
-            m_plugin_load_errors.emplace(name, "Failed to initialize");
+        try {
+            if (!init_fn(&g_plugin_initialize_param)) {
+                spdlog::error("[PluginLoader] Failed to initialize {}", name);
+                m_plugin_load_errors.emplace(name, "Failed to initialize");
+                FreeLibrary(mod);
+                it = m_plugins.erase(it);
+                continue;
+            }
+        } catch(...) {
+            spdlog::error("[PluginLoader] {} has an exception in reframework_plugin_initialize, skipping...", name);
+            m_plugin_load_errors.emplace(name, "Exception occurred in reframework_plugin_initialize");
             FreeLibrary(mod);
             it = m_plugins.erase(it);
             continue;

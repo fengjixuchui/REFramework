@@ -14,7 +14,11 @@
 #include "utility/Scan.hpp"
 #include "utility/Module.hpp"
 #include "utility/Memory.hpp"
+#include "utility/ImGui.hpp"
 #include "sdk/Renderer.hpp"
+#include "sdk/MotionFsm2Layer.hpp"
+
+#include "../mods/ScriptRunner.hpp"
 
 #include "HookManager.hpp"
 
@@ -323,6 +327,7 @@ ObjectExplorer::ObjectExplorer()
 {
     m_type_name.reserve(256);
     m_type_member.reserve(256);
+    m_type_field.reserve(256);
     m_object_address.reserve(256);
     m_add_component_name.reserve(256);
 }
@@ -339,7 +344,56 @@ void ObjectExplorer::on_draw_dev_ui() {
         return;
     }
     if (ImGui::Button("Dump SDK")) {
-        generate_sdk();
+        std::thread t(&ObjectExplorer::generate_sdk, this);
+        t.detach();
+    }
+
+    if (m_dumping_sdk) {
+        const char* overlay = nullptr;
+        float progress = m_sdk_dump_progress;
+
+        switch (m_sdk_dump_stage) {
+        case SdkDumpStage::NONE:
+            progress = 0.0f;
+            break;
+        case SdkDumpStage::DUMP_INITIALIZATION:
+            overlay = "Initializing Dump...";
+            progress = static_cast<float>(ImGui::GetTime()) * -0.35f;
+            break;
+        case SdkDumpStage::DUMP_TYPES: 
+            overlay = "Dumping Types...";
+            break;
+        case SdkDumpStage::DUMP_RSZ:
+            overlay = "Dumping RSZ...";
+            break;
+        case SdkDumpStage::DUMP_METHODS:
+            overlay = "Dumping Methods...";
+            break;
+        case SdkDumpStage::DUMP_FIELDS:
+            overlay = "Dumping Fields...";
+            break;
+        case SdkDumpStage::DUMP_PROPERTIES:
+            overlay = "Dumping Properties...";
+            break;
+        case SdkDumpStage::DUMP_RSZ_2:
+            overlay = "Adjusting RSZ...";
+            break;
+        case SdkDumpStage::DUMP_DESERIALIZER_CHAIN:
+            overlay = "Dumping Deserializer Chains...";
+            break;
+        case SdkDumpStage::DUMP_NON_TDB_TYPES:
+            overlay = "Dumping Non-TDB Types...";
+            break;
+        case SdkDumpStage::GENERATE_SDK:
+            overlay = "Generating IDA SDK...";
+            progress = static_cast<float>(ImGui::GetTime()) * -0.35f;
+            break;
+        default: 
+            progress = 0.0f;
+            break;
+        }
+
+        imgui::progress_bar(progress, {}, overlay);
     }
 
     auto curtime = std::chrono::system_clock::now();
@@ -485,8 +539,24 @@ void ObjectExplorer::on_draw_dev_ui() {
 
     if (m_do_init || ImGui::InputText("Method Signature", m_type_member.data(), 256)) {
         m_displayed_types.clear();
+        m_type_field[0] = '\0';
 
         if (!std::string_view{m_type_member.data()}.empty()) {
+            for (auto i = std::find_if(m_sorted_types.begin(), m_sorted_types.end(), [this](const auto& a) { return is_filtered_type(a); });
+                i != m_sorted_types.end();
+                i = std::find_if(i + 1, m_sorted_types.end(), [this](const auto& a) { return is_filtered_type(a); })) {
+                if (auto t = get_type(*i)) {
+                    m_displayed_types.push_back(t);
+                }
+            }
+        }
+    }
+
+    if (m_do_init || ImGui::InputText("Field Signature", m_type_field.data(), 256)) {
+        m_displayed_types.clear();
+        m_type_member[0] = '\0';
+
+        if (!std::string_view{m_type_field.data()}.empty()) {
             for (auto i = std::find_if(m_sorted_types.begin(), m_sorted_types.end(), [this](const auto& a) { return is_filtered_type(a); });
                 i != m_sorted_types.end();
                 i = std::find_if(i + 1, m_sorted_types.end(), [this](const auto& a) { return is_filtered_type(a); })) {
@@ -707,6 +777,11 @@ void ObjectExplorer::generate_sdk() {
     //auto ref = utility::scan(g_framework->get_module().as<HMODULE>(), "66 C7 40 18 01 01 48 89 05 ? ? ? ?");
     //auto& l = *(std::map<uint64_t, REEnumData>*)(utility::calculate_absolute(*ref + 9));
 
+    m_dumping_sdk = true;
+    m_sdk_dump_stage = SdkDumpStage::DUMP_INITIALIZATION;
+    uint32_t k = 0;
+    auto n_types = 0ull;
+
     genny::Sdk sdk{};
     auto g = sdk.global_ns();
 
@@ -744,8 +819,12 @@ void ObjectExplorer::generate_sdk() {
         g_stypedb[desc->full_name] = desc;
     }
 
+    m_sdk_dump_stage = SdkDumpStage::DUMP_TYPES;
+
     // Finish off initialization of types
     for (uint32_t i = 0; i < tdb->numTypes; ++i) {
+        m_sdk_dump_progress = static_cast<float>(i) / tdb->numTypes;
+
         auto desc = init_type(il2cpp_dump, tdb, i);
         auto& t = *desc->t;
 
@@ -782,12 +861,41 @@ void ObjectExplorer::generate_sdk() {
                 type_entry["native_typename"] = type_info->name;
             }
         }
+
+        type_entry["name_hierarchy"] = t.get_name_hierarchy();
+        type_entry["is_generic_type"] = t.is_generic_type();
+        type_entry["is_generic_type_definition"] = t.is_generic_type_definition();
+
+        if (auto gtd = t.get_generic_type_definition(); gtd != nullptr) {
+            type_entry["generic_type_definition"] = gtd->get_full_name();
+        }
+
+        const auto generics = t.get_generic_argument_types();
+
+        if (!generics.empty()) {
+            for (auto gt : generics) {
+                if (gt != nullptr) {
+                    type_entry["generic_arg_types"].push_back({
+                        {"type", gt->get_full_name()},
+                        {"typeid", gt->get_index()}
+                    });
+                } else {
+                    type_entry["generic_arg_types"].push_back({
+                        {"type", "unknown"},
+                        {"typeid", 0}
+                    });
+                }
+            }
+        }
     }
 
+    m_sdk_dump_stage = SdkDumpStage::DUMP_RSZ;
 
     // Initialize RSZ
     // Dont do it in init_type because it calls init_type
     for (uint32_t i = 0; i < tdb->numTypes; ++i) {
+        m_sdk_dump_progress = static_cast<float>(i) / tdb->numTypes;
+
         auto pt = init_type(il2cpp_dump, tdb, i);
         auto& t = *pt->t;
 
@@ -843,14 +951,18 @@ void ObjectExplorer::generate_sdk() {
         }
     }
 
+    m_sdk_dump_stage = SdkDumpStage::DUMP_METHODS;
+
     // Methods
     for (uint32_t i = 0; i < tdb->numMethods; ++i) {
+        m_sdk_dump_progress = static_cast<float>(i) / tdb->numMethods;
+
         auto& m = *tdb->get_method(i);
 
 #if TDB_VER >= 69
         auto type_id = (uint32_t)m.declaring_typeid;
         auto impl_id = (uint32_t)m.impl_id;
-        auto param_list = (uint32_t)m.params;
+        auto param_list = (uint32_t)m.get_param_index();
 #else
         const auto type_id = (uint32_t)m.declaring_typeid;
         const auto param_list = m.params;
@@ -1168,17 +1280,20 @@ void ObjectExplorer::generate_sdk() {
     }
 
     spdlog::info("FIELDS BEGIN");
+    m_sdk_dump_stage = SdkDumpStage::DUMP_FIELDS;
 
     auto dummy_constant = g->class_("__DummyClass__")->constant("__DummyConstant__")->type("int32_t");
 
     // Fields
     for (uint32_t i = 0; i < tdb->numFields; ++i) {
+        m_sdk_dump_progress = static_cast<float>(i) / tdb->numFields;
+
         auto& f = (*tdb->fields)[i];
 
 #if TDB_VER >= 69
         const auto type_id = (uint32_t)f.declaring_typeid;
         const auto impl_id = (uint32_t)f.impl_id;
-        const auto offset = (uint32_t)f.offset;
+        const auto offset = (uint32_t)f.get_offset_from_fieldptr();
 #else
         const auto type_id = (uint32_t)f.declaring_typeid;
         const auto offset = f.offset;
@@ -1199,14 +1314,21 @@ void ObjectExplorer::generate_sdk() {
 
         auto br_impl = BitReader{&impl};
 
-        const auto field_attr_id = (uint16_t)br_impl.read_short();
+        /*const auto field_attr_id = (uint16_t)br_impl.read_short();
         const auto field_flags = (uint16_t)br_impl.read_short();
         const auto field_type = (uint32_t)br_impl.read(18);
         const auto init_data_low = (uint16_t)br_impl.read(14);
         const auto name_offset = (uint32_t)br_impl.read(30);
         const auto init_data_high = (uint8_t)br_impl.read(2);
         const auto name = Address{tdb->stringPool}.get(name_offset).as<const char*>();
-        const auto init_data_index = init_data_low | (init_data_high << 14);
+        const auto init_data_index = init_data_low | (init_data_high << 14);*/
+
+        const auto field_attr_id = impl.attributes_id;
+        const auto field_flags = impl.flags;
+        const auto field_type = f.get_type() != nullptr ? f.get_type()->get_index() : 0;
+        const auto name_offset = impl.name_offset;
+        const auto init_data_index = f.get_init_data_index();
+        const auto name = tdb->get_string(name_offset);
 #else
         const auto name_offset = f.name_offset;
         const auto name = Address{ tdb->stringPool }.get(name_offset).as<const char*>();
@@ -1457,9 +1579,12 @@ void ObjectExplorer::generate_sdk() {
     }
     
     spdlog::info("PROPERTIES BEGIN");
+    m_sdk_dump_stage = SdkDumpStage::DUMP_PROPERTIES;
 
     // properties
     for (uint32_t i = 0; i < tdb->numProperties; ++i) {
+        m_sdk_dump_progress = static_cast<float>(i) / tdb->numProperties;
+
         auto& p = (*tdb->properties)[i];
 
         const auto getter_id = (uint32_t)p.getter;
@@ -1527,8 +1652,14 @@ void ObjectExplorer::generate_sdk() {
     // Try and guess what the field names are for the RSZ entries
     // In RE7, the deserializer points to the reflection property,
     // so we can just grab the name from there instead of comparing field offsets.
+    
 #if TDB_VER > 49
+    m_sdk_dump_stage = SdkDumpStage::DUMP_RSZ_2;
+    k = 0;
+    n_types = m_sorted_types.size();
     for (auto& t : g_itypedb) {
+        m_sdk_dump_progress = static_cast<float>(k++) / n_types;
+
         auto tdef = t.second->t;
 
         if (tdef == nullptr || tdef->get_index() == 0) {
@@ -1589,9 +1720,13 @@ void ObjectExplorer::generate_sdk() {
     }
 #endif
 #endif
-
+    m_sdk_dump_stage = SdkDumpStage::DUMP_DESERIALIZER_CHAIN;
+    k = 0;
+    n_types = m_sorted_types.size();
     // First pass, gather all valid class names
     for (const auto& name : m_sorted_types) {
+        m_sdk_dump_progress = static_cast<float>(k++) / n_types;
+
         auto t = get_type(name);
 
         if (t == nullptr || t->name == nullptr) {
@@ -1612,7 +1747,7 @@ void ObjectExplorer::generate_sdk() {
         }
 #endif
 
-        if (t->fields == nullptr /*|| t->classInfo == nullptr || utility::re_class_info::get_vm_type(t->classInfo) != via::clr::VMObjType::Object*/) {
+        if (t->fields == nullptr) {
             continue;
         }
 
@@ -1625,7 +1760,12 @@ void ObjectExplorer::generate_sdk() {
     }
 
 #if TDB_VER > 49
+    m_sdk_dump_stage = SdkDumpStage::DUMP_NON_TDB_TYPES;
+    k = 0;
+    n_types = m_sorted_types.size();
     for (const auto& name : m_sorted_types) {
+        m_sdk_dump_progress = static_cast<float>(k++) / n_types;
+
         auto t = get_type(name);
 
         if (t == nullptr || t->name == nullptr) {
@@ -1686,7 +1826,7 @@ void ObjectExplorer::generate_sdk() {
                 continue;
             }
 
-            if (super->fields == nullptr /*|| super->classInfo == nullptr || utility::re_class_info::get_vm_type(super->classInfo) != via::clr::VMObjType::Object*/) {
+            if (super->fields == nullptr) {
                 continue;
             }
 
@@ -1871,9 +2011,23 @@ void ObjectExplorer::generate_sdk() {
     sdk.generate("sdk");*/
 
     spdlog::info("Generating IDA SDK...");
+    m_sdk_dump_stage = SdkDumpStage::GENERATE_SDK;
     
     genny::ida::transform(sdk);
     sdk.generate("sdk_ida");
+
+    // Free a couple gigabytes of no longer used memory
+    g_stypedb.clear();
+    g_itypedb.clear();
+    g_fqntypedb.clear();
+    g_iparamdb.clear();
+    g_imethoddb.clear();
+
+    m_dumping_sdk = false;
+}
+
+void ObjectExplorer::report_sdk_dump_progress(float progress) {
+    m_sdk_dump_progress = progress;
 }
 
 void ObjectExplorer::handle_address(Address address, int32_t offset, Address parent, Address real_address) {
@@ -1893,6 +2047,7 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
 
     bool made_node = false;
     const auto is_game_object = utility::re_managed_object::is_a(object, "via.GameObject");
+    const auto is_bhvt = utility::re_managed_object::is_a(object, "via.behaviortree.BehaviorTree");
     const auto obj_typedef = utility::re_managed_object::get_type_definition(object);
 
     if (obj_typedef != nullptr) {
@@ -1967,15 +2122,11 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
                 additional_text = "ValType";
                 break;
             case via::clr::VMObjType::Object: {
-#if TDB_VER > 49
-                additional_text = object->info->classInfo->type->name;
-#else
-                additional_text = object->info->type->name;
-#endif
-
                 auto t = utility::re_managed_object::get_type(object);
 
                 if (t != nullptr) {
+                    additional_text = t->name;
+
                     auto type_name = std::string{t->name};
                     auto ret = utility::hash(type_name);
 
@@ -2014,6 +2165,10 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
     }
 
     if (made_node || offset == -1) {
+        if (is_bhvt) {
+            handle_behavior_tree(address.as<sdk::behaviortree::BehaviorTree*>());
+        }
+
         if (is_game_object) {
             handle_game_object(address.as<REGameObject*>());
         }
@@ -2040,12 +2195,7 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
 
                         const auto contained_type = utility::re_array::get_contained_type(arr);
 
-#if TDB_VER > 49
-                        fake_obj.info = arr->containedType->parentInfo;
-#else
-                        fake_obj.info = (::REObjectInfo*)&sdk::VM::get()->types[contained_type->get_index()];
-#endif
-
+                        fake_obj.info = contained_type->get_managed_vt();
                         auto real_size = contained_type->get_size();
 
                         std::vector<uint8_t> copied_obj{};
@@ -2071,11 +2221,6 @@ void ObjectExplorer::handle_address(Address address, int32_t offset, Address par
         }
 
         if (ImGui::TreeNode(real_address.ptr(), "AutoGenerated Types")) {
-#if TDB_VER > 49
-            auto type_info = object->info->classInfo->type;
-#else
-            auto type_info = object->info->type;
-#endif
             auto size = utility::re_managed_object::get_size(object);
 
             for (auto i = (uint32_t)sizeof(void*); i < size; i += sizeof(void*)) {
@@ -2213,7 +2358,7 @@ void ObjectExplorer::handle_transform(RETransform* transform) {
 }
 
 void ObjectExplorer::handle_render_layer(sdk::renderer::RenderLayer* layer) {
-    auto made_node = ImGui::TreeNode(&layer->m_layers, "Child Layers");
+    const auto made_node = ImGui::TreeNode(&layer->m_layers, "Child Layers");
     context_menu(&layer->m_layers);
 
     if (made_node) {
@@ -2225,6 +2370,89 @@ void ObjectExplorer::handle_render_layer(sdk::renderer::RenderLayer* layer) {
 
         ImGui::TreePop();
     }
+}
+
+void ObjectExplorer::handle_behavior_tree(sdk::behaviortree::BehaviorTree* bhvt) {
+    const auto made_node = ImGui::TreeNode(&bhvt->trees, "Trees");
+
+    if (made_node) {
+        int32_t count = 0;
+
+        for (auto tree : bhvt->get_trees()) {
+            handle_behavior_tree_core_handle(bhvt, tree, count++);
+        }
+
+        ImGui::TreePop();
+    }
+}
+
+void ObjectExplorer::handle_behavior_tree_core_handle(sdk::behaviortree::BehaviorTree* bhvt, sdk::behaviortree::CoreHandle* bhvt_core_handle, uint32_t tree_idx) {
+    const auto made_node = ImGui::TreeNode(&bhvt_core_handle->core.tree_object, "Nodes");
+
+    if (made_node) {
+        int32_t count = 0;
+        const auto tree_object = bhvt_core_handle->get_tree_object();
+
+        if (tree_object != nullptr) {
+            auto nodes = tree_object->get_nodes();
+
+            std::sort(nodes.begin(), nodes.end(), [](sdk::behaviortree::TreeNode* a, sdk::behaviortree::TreeNode* b) {
+                return a->get_full_name() < b->get_full_name();
+            });
+
+            for (auto node : tree_object->get_nodes()) {
+                handle_behavior_tree_node(bhvt, node, tree_idx);
+            }
+        }
+
+        ImGui::TreePop();
+    }
+}
+
+void ObjectExplorer::handle_behavior_tree_node(sdk::behaviortree::BehaviorTree* bhvt, sdk::behaviortree::TreeNode* node, uint32_t tree_idx) {
+    ImGui::PushID(node);
+
+    // Activate node
+    if (bhvt != nullptr && ImGui::Button("X")) {
+        bhvt->set_current_node(node, tree_idx);
+    }
+
+    ImGui::SameLine();
+
+    const auto node_name = node->get_name();
+    const auto node_full_name = utility::narrow(node->get_full_name());
+
+    const auto made_node = ImGui::TreeNode(node, node_full_name.data());
+
+    if (made_node) {
+        ImGui::Text("ID: %u", node->get_id());
+        ImGui::Text("Status1: %i", (int32_t)node->get_status1());
+        ImGui::Text("Status2: %i", (int32_t)node->get_status2());
+
+        if (ImGui::TreeNode("Children")) {
+            for (auto child : node->get_children()) {
+                handle_behavior_tree_node(bhvt, child, tree_idx);
+            }
+
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNode("Selector")) {
+            handle_address(node->get_selector());
+
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNode("Selector Condition")) {
+            handle_address(node->get_selector_condition());
+
+            ImGui::TreePop();
+        }
+
+        ImGui::TreePop();
+    }
+
+    ImGui::PopID();
 }
 
 void ObjectExplorer::handle_type(REManagedObject* obj, REType* t) {
@@ -2277,12 +2505,27 @@ void ObjectExplorer::handle_type(REManagedObject* obj, REType* t) {
 
         // Display type flags
         if (type_info->classInfo != nullptr) {
-            if (stretched_tree_node("TypeFlags")) {
-#if TDB_VER > 49
-                display_enum_value("via.clr.TypeFlag", (int64_t)type_info->classInfo->typeFlags);
-#else
-                display_enum_value("via.clr.TypeFlag", 0);
-#endif
+            if (stretched_tree_node("Type Information")) {
+                if (stretched_tree_node("TypeFlags")) {
+                    display_enum_value("via.clr.TypeFlag", (int64_t)((sdk::RETypeDefinition*)type_info->classInfo)->get_flags());
+                    ImGui::TreePop();
+                }
+
+                const auto td = utility::re_type::get_type_definition(type_info);
+
+                if (td != nullptr) {
+                    const auto generic_td = td->get_generic_type_definition();
+
+                    if (generic_td != nullptr) {
+                        if (stretched_tree_node("Generic Type Definition")) {
+                            ImGui::Text("Name: %s", generic_td->get_full_name().c_str()); // just in-case the get_type() returns nullptr.
+                            display_native_methods(nullptr, generic_td);
+                            display_native_fields(nullptr, generic_td);
+                            ImGui::TreePop();
+                        }
+                    }
+                }
+
                 ImGui::TreePop();
             }
         }
@@ -2469,7 +2712,7 @@ void ObjectExplorer::display_reflection_properties(REManagedObject* obj, REType*
 
             // Set the obj to the static table so we can get static variables
             if (utility::reflection_property::is_static(variable)) {
-                const auto type_index = BitReader{&type_info->classInfo->typeIndex}.read<uint32_t>(18);
+                const auto type_index = ((sdk::RETypeDefinition*)type_info->classInfo)->get_index();
 
                 local_obj = (REManagedObject*)sdk::VM::get()->get_static_tbl_for_type(type_index);
 
@@ -2547,6 +2790,10 @@ void ObjectExplorer::display_native_fields(REManagedObject* obj, sdk::RETypeDefi
 
     if (ImGui::TreeNode(*fields.begin(), "TDB Fields: %i", fields.size())) {
         for (auto f : fields) {
+            if (!is_filtered_field(*f)) {
+                continue;
+            }
+
             const auto field_declaring_type = f->get_declaring_type();
             const auto field_flags = f->get_flags();
             const auto field_type = f->get_type();
@@ -2811,7 +3058,7 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
 
                     auto ip = (uintptr_t)method_ptr;
 
-                    for (auto i = 0; i < 10; i++) {
+                    for (auto i = 0; i < 20; i++) {
                         if (ZYAN_FAILED(
                             ZydisDecoderDecodeFull(
                                 &decoder, (void*)ip, 256, &is,
@@ -2841,8 +3088,8 @@ void ObjectExplorer::display_native_methods(REManagedObject* obj, sdk::RETypeDef
 
                         ip += is.length;
 
-                        // check if ret or int3 and stop
-                        if (is.mnemonic == ZYDIS_MNEMONIC_RET || is.mnemonic == ZYDIS_MNEMONIC_INT3) {
+                        // check if int3 and stop
+                        if (is.mnemonic == ZYDIS_MNEMONIC_INT3) {
                             break;
                         }
                     }
@@ -3264,6 +3511,10 @@ int32_t ObjectExplorer::get_field_offset(REManagedObject* obj, VariableDescripto
         return m_offset_map[desc];
     }
 
+    if (parent_hash == "via.ResourceManager"_fnv && name_hash == "Loading"_fnv) {
+        return m_offset_map[desc];
+    }
+
     auto thread_context = sdk::get_thread_context();
 
     // Set up our "translator" to throw on any exception,
@@ -3670,6 +3921,8 @@ std::string ObjectExplorer::get_full_enum_value_name(std::string_view enum_name,
 }
 
 std::string ObjectExplorer::get_enum_value_name(std::string_view enum_name, int64_t value) {
+    std::lock_guard l{m_enum_mutex};
+
     if (!m_enums.contains(enum_name.data())) {
         spdlog::info("Unknown enum: {}", enum_name);
         return "";
@@ -3725,11 +3978,23 @@ bool ObjectExplorer::is_filtered_type(std::string name) {
     if (tdef == nullptr) {
         return false;
     }
-    for (auto& m : tdef->get_methods()) {
-        if (is_filtered_method(m)) {
-            return true;
+
+    if (!std::string_view{m_type_member.data()}.empty()) {
+        for (auto& m : tdef->get_methods()) {
+            if (is_filtered_method(m)) {
+                return true;
+            }
         }
     }
+
+    if (!std::string_view{m_type_field.data()}.empty()) {
+        for (auto f : tdef->get_fields()) {
+            if (f != nullptr && is_filtered_field(*f)) {
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -3790,6 +4055,42 @@ bool ObjectExplorer::is_filtered_method(sdk::REMethodDefinition& m) try {
         i != method_param_types.end()) {
         return true;
     }
+
+    return false;
+} catch (...) {
+    return false;
+}
+
+bool ObjectExplorer::is_filtered_field(sdk::REField& f) try {
+    const auto field_name = f.get_name();
+    const auto name = std::string_view{m_type_field.data()};
+    if (name.empty()) {
+        return true;
+    }
+
+    if (!m_search_using_regex) {
+        if (std::string_view{field_name}.find(name) != std::string_view::npos) {
+            return true;
+        }
+    } else {
+        if (std::regex_search(field_name, std::regex{name.data()})) {
+            return true;
+        }
+    }
+
+    const auto field_type = f.get_type();
+    const std::string field_type_name = field_type != nullptr ? field_type->get_full_name() : "";
+
+    if (!m_search_using_regex) {
+        if (field_type_name.find(name) != std::string::npos) {
+            return true;
+        }
+    } else {
+        if (std::regex_search(field_type_name, std::regex{name.data()})) {
+            return true;
+        }
+    }
+
     return false;
 } catch (...) {
     return false;

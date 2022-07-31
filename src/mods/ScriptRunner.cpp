@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #include <cstdint>
 #include <filesystem>
 
@@ -7,6 +9,7 @@
 #include "sdk/REManagedObject.hpp"
 #include "sdk/RETypeDB.hpp"
 #include "sdk/SceneManager.hpp"
+#include "sdk/REMath.hpp"
 
 #include "utility/String.hpp"
 
@@ -18,6 +21,9 @@
 #include "bindings/FS.hpp"
 
 #include "ScriptRunner.hpp"
+
+#include <lstate.h> // weird include order because of sol
+#include <lgc.h>
 
 namespace api::re {
 void msg(const char* text) {
@@ -40,15 +46,20 @@ void error(const char* str) {
 
 void debug(const char* str) {
     OutputDebugString(str);
+    fprintf(stderr, "%s\n", str);
     spdlog::debug(str);
 }
 }
 
-ScriptState::ScriptState() {
+ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data) {
     std::scoped_lock _{ m_execution_mutex };
 
     m_lua.registry()["state"] = this;
-    m_lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table, sol::lib::bit32, sol::lib::utf8, sol::lib::os);
+    m_lua.open_libraries(sol::lib::base, sol::lib::package, sol::lib::string, sol::lib::math, sol::lib::table, sol::lib::bit32,
+        sol::lib::utf8, sol::lib::os, sol::lib::coroutine);
+
+    // Disable garbage collection. We will manually do it at the end of each frame.
+    gc_data_changed(gc_data);
     
     // Restrict os library
     auto os = m_lua["os"];
@@ -186,8 +197,18 @@ ScriptState::ScriptState() {
                 return lhs * rhs;
             }
         ),
-        sol::meta_function::index, [](Matrix4x4f& lhs, int index) -> Vector4f& {
-            return lhs[index];
+        sol::meta_function::index, [](sol::this_state s, Matrix4x4f& lhs, sol::object index_obj) -> sol::object {
+            if (!index_obj.is<int>()) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            const auto index = index_obj.as<int>();
+
+            if (index >= 4) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, &lhs[index]);
         },
         sol::meta_function::new_index, [](Matrix4x4f& lhs, int index, Vector4f& rhs) {
             lhs[index] = rhs;
@@ -204,6 +225,7 @@ ScriptState::ScriptState() {
         "z", &glm::quat::z,
         "w", &glm::quat::w,
         "to_mat4", [](glm::quat& q) { return Matrix4x4f{q}; },
+        "to_euler", [](glm::quat& q) -> Vector3f { return utility::math::euler_angles(Matrix4x4f{q}); },
         "inverse", [](glm::quat& q) { return glm::inverse(q); },
         "invert", [](glm::quat& q) { q = glm::inverse(q); },
         "normalize", [](glm::quat& q) { q = glm::normalize(q); },
@@ -223,8 +245,18 @@ ScriptState::ScriptState() {
                 return lhs * rhs;
             }
         ),
-        sol::meta_function::index, [](glm::quat& lhs, int index) -> float& {
-            return lhs[index];
+        sol::meta_function::index, [](sol::this_state s, glm::quat& lhs, sol::object index_obj) -> sol::object {
+            if (!index_obj.is<int>()) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            const auto index = index_obj.as<int>();
+
+            if (index >= 4) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, lhs[index]);
         },
         sol::meta_function::new_index, [](glm::quat& lhs, int index, float rhs) {
             lhs[index] = rhs;
@@ -359,6 +391,32 @@ void ScriptState::on_application_entry(size_t hash) {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    }
+
+    if (hash == "EndRendering"_fnv && m_gc_data.gc_handler == ScriptState::GarbageCollectionHandler::REFRAMEWORK_MANAGED) {
+        switch (m_gc_data.gc_type) {
+            case ScriptState::GarbageCollectionType::FULL:
+                lua_gc(m_lua, LUA_GCCOLLECT);
+                break;
+            case ScriptState::GarbageCollectionType::STEP: 
+                {
+                    const auto now = std::chrono::high_resolution_clock::now();
+
+                    if (m_gc_data.gc_mode == ScriptState::GarbageCollectionMode::GENERATIONAL) {
+                        lua_gc(m_lua, LUA_GCSTEP, 1);
+                    } else {
+                        while (lua_gc(m_lua, LUA_GCSTEP, 1) == 0) {
+                            if (std::chrono::high_resolution_clock::now() - now >= m_gc_data.gc_budget) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                break;
+            default:
+                lua_gc(m_lua, LUA_GCCOLLECT);
+                break;
+        };
     }
 }
 
@@ -530,21 +588,63 @@ void ScriptState::install_hooks() {
     }
 }
 
+void ScriptState::gc_data_changed(GarbageCollectionData data) {
+    // Handler
+    switch (data.gc_handler) {
+    case ScriptState::GarbageCollectionHandler::REFRAMEWORK_MANAGED:
+        lua_gc(m_lua, LUA_GCSTOP);
+        break;
+    case ScriptState::GarbageCollectionHandler::LUA_MANAGED:
+        lua_gc(m_lua, LUA_GCRESTART);
+        break;
+    default:
+        lua_gc(m_lua, LUA_GCRESTART);
+        data.gc_handler = ScriptState::GarbageCollectionHandler::LUA_MANAGED;
+        break;
+    }
+
+    // Type 
+    if (data.gc_type >= ScriptState::GarbageCollectionType::LAST) {
+       data.gc_type = ScriptState::GarbageCollectionType::STEP;
+    }
+
+    // Mode
+    if (data.gc_mode >= ScriptState::GarbageCollectionMode::LAST) {
+        data.gc_mode = ScriptState::GarbageCollectionMode::GENERATIONAL;
+    }
+
+    switch (data.gc_mode) {
+    case ScriptState::GarbageCollectionMode::GENERATIONAL:
+        lua_gc(m_lua, LUA_GCGEN, data.gc_minor_multiplier, data.gc_major_multiplier);
+        break;
+    case ScriptState::GarbageCollectionMode::INCREMENTAL:
+        lua_gc(m_lua, LUA_GCINC);
+        break;
+    default:
+        lua_gc(m_lua, LUA_GCGEN, data.gc_minor_multiplier, data.gc_major_multiplier);
+        data.gc_mode = ScriptState::GarbageCollectionMode::GENERATIONAL;
+        break;
+    }
+
+    m_gc_data = data;
+}
+
 std::shared_ptr<ScriptRunner>& ScriptRunner::get() {
     static auto instance = std::make_shared<ScriptRunner>();
     return instance;
 }
 
 std::optional<std::string> ScriptRunner::on_initialize() {
-    // Calling reset_scripts even though the scripts have never been set yet still works.
-    reset_scripts();
-
     return Mod::on_initialize();
 }
 
 void ScriptRunner::on_config_load(const utility::Config& cfg) {
     for (IModValue& option : m_options) {
         option.config_load(cfg);
+    }
+
+    if (m_state != nullptr) {
+        m_state->gc_data_changed(make_gc_data());
     }
 }
 
@@ -555,11 +655,28 @@ void ScriptRunner::on_config_save(utility::Config& cfg) {
         option.config_save(cfg);
     }
 
-    m_state->on_config_save();
+    if (m_state != nullptr) {
+        m_state->on_config_save();
+    }
 }
 
 void ScriptRunner::on_frame() {
     std::scoped_lock _{m_access_mutex};
+    
+    if (m_needs_first_reset) {
+        spdlog::info("[ScriptRunner] Initializing Lua state for the first time...");
+
+        // Calling reset_scripts even though the scripts have never been set yet still works.
+        reset_scripts();
+        m_needs_first_reset = false;
+
+        spdlog::info("[ScriptRunner] Lua state initialized.");
+    }
+
+    if (m_state == nullptr) {
+        return;
+    }
+
     m_state->on_frame();
 
     // install_hooks gets called here because it ensures hooks get installed the next frame after they've been 
@@ -595,6 +712,8 @@ void ScriptRunner::on_draw_ui() {
             reset_scripts();
         }
 
+        ImGui::SameLine();
+
         if (ImGui::Button("Spawn Debug Console")) {
             if (!m_console_spawned) {
                 AllocConsole();
@@ -603,6 +722,53 @@ void ScriptRunner::on_draw_ui() {
                 freopen("CONOUT$", "w", stderr);
 
                 m_console_spawned = true;
+            }
+        }
+
+        if (ImGui::TreeNode("Garbage Collection Stats")) {
+            std::scoped_lock _{ m_access_mutex };
+
+            auto g = G(m_state->lua().lua_state());
+            const auto bytes_in_use = g->totalbytes + g->GCdebt;
+
+            ImGui::Text("Megabytes in use: %.2f", (float)bytes_in_use / 1024.0f / 1024.0f);
+
+            ImGui::TreePop();
+        }
+
+        if (m_gc_handler->draw("Garbage Collection Handler")) {
+            std::scoped_lock _{ m_access_mutex };
+            m_state->gc_data_changed(make_gc_data());
+        }
+
+        if (m_gc_mode->draw("Garbage Collection Mode")) {
+            std::scoped_lock _{ m_access_mutex };
+            m_state->gc_data_changed(make_gc_data());
+        }
+
+        if ((uint32_t)m_gc_mode->value() == (uint32_t)ScriptState::GarbageCollectionMode::GENERATIONAL) {
+            if (m_gc_minor_multiplier->draw("Minor GC Multiplier")) {
+                std::scoped_lock _{ m_access_mutex };
+                m_state->gc_data_changed(make_gc_data());
+            }
+
+            if (m_gc_major_multiplier->draw("Major GC Multiplier")) {
+                std::scoped_lock _{ m_access_mutex };
+                m_state->gc_data_changed(make_gc_data());
+            }
+        }
+
+        if (m_gc_handler->value() == (int32_t)ScriptState::GarbageCollectionHandler::REFRAMEWORK_MANAGED) {
+            if (m_gc_type->draw("Garbage Collection Type")) {
+                std::scoped_lock _{ m_access_mutex };
+                m_state->gc_data_changed(make_gc_data());
+            }
+
+            if ((uint32_t)m_gc_mode->value() != (uint32_t)ScriptState::GarbageCollectionMode::GENERATIONAL) {
+                if (m_gc_budget->draw("Garbage Collection Budget")) {
+                    std::scoped_lock _{ m_access_mutex };
+                    m_state->gc_data_changed(make_gc_data());
+                }
             }
         }
 
@@ -637,6 +803,11 @@ void ScriptRunner::on_draw_ui() {
 
     { 
         std::scoped_lock _{ m_access_mutex };
+
+        if (m_state == nullptr) {
+            return;
+        }
+
         m_state->on_draw_ui();
     }
 }
@@ -644,11 +815,19 @@ void ScriptRunner::on_draw_ui() {
 void ScriptRunner::on_pre_application_entry(void* entry, const char* name, size_t hash) {
     std::scoped_lock _{ m_access_mutex };
 
+    if (m_state == nullptr) {
+        return;
+    }
+
     m_state->on_pre_application_entry(hash);
 }
 
 void ScriptRunner::on_application_entry(void* entry, const char* name, size_t hash) {
     std::scoped_lock _{ m_access_mutex };
+
+    if (m_state == nullptr) {
+        return;
+    }
 
     m_state->on_application_entry(hash);
 }
@@ -656,22 +835,39 @@ void ScriptRunner::on_application_entry(void* entry, const char* name, size_t ha
 void ScriptRunner::on_pre_update_transform(RETransform* transform) {
     std::scoped_lock _{ m_access_mutex };
 
+    if (m_state == nullptr) {
+        return;
+    }
+
     m_state->on_pre_update_transform(transform);
 }
 
 void ScriptRunner::on_update_transform(RETransform* transform) {
     std::scoped_lock _{ m_access_mutex };
 
+    if (m_state == nullptr) {
+        return;
+    }
+
     m_state->on_update_transform(transform);
 }
+
 bool ScriptRunner::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
     std::scoped_lock _{ m_access_mutex };
+
+    if (m_state == nullptr) {
+        return true;
+    }
 
     return m_state->on_pre_gui_draw_element(gui_element, primitive_context);
 }
 
 void ScriptRunner::on_gui_draw_element(REComponent* gui_element, void* primitive_context) {
     std::scoped_lock _{ m_access_mutex };
+
+    if (m_state == nullptr) {
+        return;
+    }
 
     m_state->on_gui_draw_element(gui_element, primitive_context);
 }
@@ -716,7 +912,7 @@ void ScriptRunner::reset_scripts() {
     // if we didn't destroy the state before creating a new one
     // the FirstPerson mod would attempt to hook an already hooked function
     m_state.reset();
-    m_state = std::make_unique<ScriptState>();
+    m_state = std::make_unique<ScriptState>(make_gc_data());
     m_loaded_scripts.clear();
 
     std::string module_path{};

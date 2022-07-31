@@ -615,7 +615,7 @@ float VR::get_sharpness_hook(void* tonemapping) {
 */
 
 // Called when the mod is initialized
-std::optional<std::string> VR::on_initialize() {
+std::optional<std::string> VR::on_initialize() try {
     auto openvr_error = initialize_openvr();
 
     if (openvr_error || !m_openvr->loaded) {
@@ -703,6 +703,20 @@ and place the openxr_loader.dll in the same folder.)";
 
     // all OK
     return Mod::on_initialize();
+} catch(...) {
+    spdlog::error("Exception occurred in VR::on_initialize()");
+
+    m_runtime->error = "Exception occurred in VR::on_initialize()";
+    m_openxr->dll_missing = false;
+    m_openvr->dll_missing = false;
+    m_openxr->error = "Exception occurred in VR::on_initialize()";
+    m_openvr->error = "Exception occurred in VR::on_initialize()";
+    m_openvr->loaded = false;
+    m_openvr->is_hmd_active = false;
+    m_openxr->loaded = false;
+    m_init_finished = false;
+
+    return Mod::on_initialize();
 }
 
 void VR::on_lua_state_created(sol::state& lua) {
@@ -770,7 +784,7 @@ std::optional<std::string> VR::initialize_openvr() {
     m_openvr = std::make_shared<runtimes::OpenVR>();
     m_openvr->loaded = false;
 
-    if (LoadLibraryA("openvr_api.dll") == nullptr) {
+    if (utility::load_module_from_current_directory(L"openvr_api.dll") == nullptr) {
         spdlog::info("[VR] Could not load openvr_api.dll");
 
         m_openvr->dll_missing = true;
@@ -887,7 +901,7 @@ std::optional<std::string> VR::initialize_openxr() {
 
     spdlog::info("[VR] Initializing OpenXR");
 
-    if (LoadLibraryA("openxr_loader.dll") == nullptr) {
+    if (utility::load_module_from_current_directory(L"openxr_loader.dll") == nullptr) {
         spdlog::info("[VR] Could not load openxr_loader.dll");
 
         m_openxr->loaded = false;
@@ -2410,7 +2424,19 @@ void VR::on_present() {
     if (runtime->is_openvr()) {
         if (openvr->got_first_poses) {
             const auto hmd_activity = openvr->hmd->GetTrackedDeviceActivityLevel(vr::k_unTrackedDeviceIndex_Hmd);
-            openvr->is_hmd_active = hmd_activity == vr::k_EDeviceActivityLevel_UserInteraction || hmd_activity == vr::k_EDeviceActivityLevel_UserInteraction_Timeout;
+            auto hmd_active = hmd_activity == vr::k_EDeviceActivityLevel_UserInteraction || hmd_activity == vr::k_EDeviceActivityLevel_UserInteraction_Timeout;
+
+            if (hmd_active) {
+                openvr->last_hmd_active_time = std::chrono::system_clock::now();
+            }
+
+            const auto now = std::chrono::system_clock::now();
+
+            if (now - openvr->last_hmd_active_time <= std::chrono::seconds(5)) {
+                hmd_active = true;
+            }
+
+            openvr->is_hmd_active = hmd_active;
 
             // upon headset re-entry, reinitialize OpenVR
             if (openvr->is_hmd_active && !openvr->was_hmd_active) {
@@ -2805,6 +2831,10 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                         case "GUIReticle"_fnv:
                             ui_distance = 5.0f;
                             ui_scale = 2.0f;
+                            break;
+                        case "hud_hunterwirewindow"_fnv:
+                            ui_distance = 10.0f;
+                            ui_scale = 1.0f;
                             break;
                         default:
                             break;

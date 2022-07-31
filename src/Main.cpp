@@ -2,6 +2,10 @@
 #include <mutex>
 #include <thread>
 #include <windows.h>
+#include <winternl.h>
+
+#include <utility/Module.hpp>
+#include <utility/Thread.hpp>
 
 #include "ExceptionHandler.hpp"
 #include "REFramework.hpp"
@@ -63,6 +67,15 @@ void startup_thread(HMODULE reframework_module) {
 
     if (load_dinput8()) {
         g_framework = std::make_unique<REFramework>(reframework_module);
+
+        const auto our_dll = utility::get_module_within(&load_dinput8);
+
+#ifdef MHRISE
+        if (our_dll) {
+            utility::spoof_module_paths_in_exe_dir();
+            utility::unlink(*our_dll);
+        }
+#endif
     }
 }
 

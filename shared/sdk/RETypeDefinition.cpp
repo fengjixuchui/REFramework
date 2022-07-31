@@ -155,6 +155,9 @@ std::string RETypeDefinition::get_full_name() const {
     std::deque<std::string> names{};
     std::string full_name{};
 
+    // because using normal find_type will loop back to this function and cause a deadlock
+    static auto system_runtime_type = sdk::RETypeDB::get()->find_type_by_fqn(0x99ff88e6);
+
     if (this->declaring_typeid > 0 && this->declaring_typeid != this->get_index()) {
         std::unordered_set<const sdk::RETypeDefinition*> seen_classes{};
 
@@ -200,11 +203,36 @@ std::string RETypeDefinition::get_full_name() const {
         g_full_names[this->get_index()] = full_name;
     }
 
-#if TDB_VER > 49
-    if (this->generics > 0) {
-        auto generics = tdb->get_data<sdk::GenericListData>(this->generics);
+    auto generate_full_name_via_reflection = [&]() {
+        struct FakeRuntimeType : public ::REManagedObject {
+            const sdk::RETypeDefinition* t{nullptr};
+            uint32_t unk{0};
+        };
 
-        if (generics->num > 0) {
+        FakeRuntimeType fake_type{};
+        fake_type.t = this;
+
+        static auto get_full_name_method = system_runtime_type->get_method("get_FullName");
+
+        auto full_name_obj = get_full_name_method->call<::SystemString*>(sdk::get_thread_context(), &fake_type);
+
+        if (full_name_obj != nullptr) {
+            full_name = utility::re_string::get_string(full_name_obj);
+
+            // replace all instance of "+" with "."
+            std::replace(std::execution::seq, full_name.begin(), full_name.end(), '+', '.');
+        }
+    };
+
+#if TDB_VER > 49
+    const auto generics = this->get_generic_data();
+
+    if (generics != nullptr && generics->num > 0) {
+        // The base type that isn't inflated.
+        if (this->is_generic_type_definition()) {
+            generate_full_name_via_reflection();
+        } else {
+            // We COULD use generate_full_name_via_reflection, but that's API breaking because it removes the spaces we add manually here.
             full_name += "<";
 
             for (uint32_t f = 0; f < generics->num; ++f) {
@@ -224,6 +252,8 @@ std::string RETypeDefinition::get_full_name() const {
 
             full_name += ">";
         }
+    } else if (generics != nullptr) {
+        generate_full_name_via_reflection();
     }
 #else
     //full_name += "<not implemented>";
@@ -231,26 +261,7 @@ std::string RETypeDefinition::get_full_name() const {
 
     // For arrays
     if (full_name.empty()) {
-        struct FakeRuntimeType : public ::REManagedObject {
-            const sdk::RETypeDefinition* t{nullptr};
-            uint32_t unk{0};
-        };
-
-        FakeRuntimeType fake_type{};
-        fake_type.t = this;
-
-        // because using normal find_type will loop back to this function and cause a deadlock
-        static auto system_runtime_type = sdk::RETypeDB::get()->find_type_by_fqn(0x99ff88e6);
-        static auto get_full_name_method = system_runtime_type->get_method("get_FullName");
-
-        auto full_name_obj = get_full_name_method->call<::SystemString*>(sdk::get_thread_context(), &fake_type);
-
-        if (full_name_obj != nullptr) {
-            full_name = utility::re_string::get_string(full_name_obj);
-
-            // replace all instance of "+" with "."
-            std::replace(std::execution::seq, full_name.begin(), full_name.end(), '+', '.');
-        }
+        generate_full_name_via_reflection();
     }
 
     {
@@ -260,6 +271,43 @@ std::string RETypeDefinition::get_full_name() const {
 
     return full_name;
 #endif
+}
+
+std::vector<std::string> RETypeDefinition::get_name_hierarchy() const {
+    std::deque<std::string> names{};
+    std::string full_name{};
+
+    if (this->declaring_typeid > 0 && this->declaring_typeid != this->get_index()) {
+        std::unordered_set<const sdk::RETypeDefinition*> seen_classes{};
+
+        for (auto owner = this; owner != nullptr; owner = owner->get_declaring_type()) {
+            if (seen_classes.count(owner) > 0) {
+                break;
+            }
+
+            names.push_front(owner->get_name());
+
+            if (owner->get_declaring_type() == nullptr && !std::string{owner->get_namespace()}.empty()) {
+                names.push_front(owner->get_namespace());
+            }
+
+            // uh.
+            if (owner->get_declaring_type() == this) {
+                break;
+            }
+
+            seen_classes.insert(owner);
+        }
+    } else {
+        // namespace
+        if (!std::string{this->get_namespace()}.empty()) {
+            names.push_front(this->get_namespace());
+        }
+
+        // actual class name
+        names.push_back(this->get_name());
+    }
+    return std::vector<std::string>(names.begin(), names.end());
 }
 
 sdk::RETypeDefinition* RETypeDefinition::get_declaring_type() const {
@@ -337,6 +385,23 @@ sdk::RETypeDefinition* RETypeDefinition::get_underlying_type() const {
     g_underlying_types[this] = underlying_type;
     return g_underlying_types[this];
 #endif
+}
+
+sdk::RETypeDefinition* RETypeDefinition::get_generic_type_definition() const {
+#if TDB_VER > 49
+    if (this->generics > 0) {
+        const auto tdb = sdk::RETypeDB::get();
+        auto generics = tdb->get_data<sdk::GenericListData>(this->generics);
+
+        const auto id = generics->definition_typeid;
+
+        if (id > 0) {
+            return tdb->get_type(id);
+        }
+    }
+#endif
+
+    return nullptr;
 }
 
 static std::shared_mutex g_field_mtx{};
@@ -442,6 +507,41 @@ std::vector<sdk::REMethodDefinition*> RETypeDefinition::get_methods(std::string_
     return out;
 }
 
+std::vector<sdk::RETypeDefinition*> RETypeDefinition::get_generic_argument_types() const {
+    std::vector<sdk::RETypeDefinition*> out{};
+
+#if TDB_VER > 49
+    const auto generics = get_generic_data();
+
+    if (generics != nullptr && generics->num > 0) {
+        const auto tdb = sdk::RETypeDB::get();
+
+        for (uint32_t f = 0; f < generics->num; ++f) {
+            auto gtypeid = generics->types[f];
+
+            if (gtypeid > 0 && gtypeid < tdb->numTypes) {
+                out.push_back(tdb->get_type(gtypeid)); // This COULD be null. we aren't going to skip it because it's important to know the index of the generic type
+            } else {
+                out.push_back(nullptr);
+            }
+        }
+    }
+#endif
+
+    return out;
+}
+
+sdk::GenericListData* RETypeDefinition::get_generic_data() const {
+#if TDB_VER > 49
+    if (this->generics > 0) {
+        const auto tdb = sdk::RETypeDB::get();
+        return tdb->get_data<sdk::GenericListData>(this->generics);
+    }
+#endif
+
+    return nullptr;
+}
+
 uint32_t RETypeDefinition::get_index() const {
 #if TDB_VER > 49
     return this->index;
@@ -493,16 +593,16 @@ bool RETypeDefinition::is_a(std::string_view other) const {
     return this->is_a(sdk::find_type_definition(other));
 }
 
-via::clr::VMObjType RETypeDefinition::get_vm_obj_type() const {
-    return (via::clr::VMObjType)this->object_type;
+::via::clr::VMObjType RETypeDefinition::get_vm_obj_type() const {
+    return (::via::clr::VMObjType)this->object_type;
 }
 
-void RETypeDefinition::set_vm_obj_type(via::clr::VMObjType type) {
+void RETypeDefinition::set_vm_obj_type(::via::clr::VMObjType type) {
     this->object_type = (uint8_t)type;
 }
 
 bool RETypeDefinition::is_value_type() const {
-    return get_vm_obj_type() == via::clr::VMObjType::ValType;
+    return get_vm_obj_type() == ::via::clr::VMObjType::ValType;
 }
 
 bool RETypeDefinition::is_enum() const {
@@ -520,7 +620,7 @@ bool RETypeDefinition::is_enum() const {
 }
 
 bool RETypeDefinition::is_array() const {
-    return get_vm_obj_type() == via::clr::VMObjType::Array;
+    return get_vm_obj_type() == ::via::clr::VMObjType::Array;
 }
 
 static std::shared_mutex g_by_ref_mtx{};
@@ -658,6 +758,20 @@ bool RETypeDefinition::is_primitive() const {
 #endif
 }
 
+bool RETypeDefinition::is_generic_type_definition() const {
+#if TDB_VER > 49
+    if (const auto gd = get_generic_data(); gd != nullptr && gd->definition_typeid == this->get_index()) {
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+bool RETypeDefinition::is_generic_type() const {
+    return get_generic_data() != nullptr;
+}
+
 uint32_t RETypeDefinition::get_crc_hash() const {
 #if TDB_VER > 49
     const auto t = get_type();
@@ -702,7 +816,7 @@ uint32_t RETypeDefinition::get_valuetype_size() const {
 
     return (*tdb->typesImpl)[impl_id].field_size;
 #else
-    return ((REClassInfo*)this)->elementSize;
+    return this->element_size;
 #endif
 }
 
@@ -862,7 +976,7 @@ void* RETypeDefinition::create_instance() const {
         // forces the game to use a simplified path for creating the object
         // because in some cases this function could fail
         const auto old_obj_type = this->get_vm_obj_type();
-        set_vm_obj_type(via::clr::VMObjType::ValType);
+        set_vm_obj_type(::via::clr::VMObjType::ValType);
 
         auto result = create_instance_alternative_func->call<REManagedObject*>(sdk::get_thread_context(), typeof);
 
@@ -872,6 +986,22 @@ void* RETypeDefinition::create_instance() const {
     } else {
         return create_instance_func->call<REManagedObject*>(sdk::get_thread_context(), typeof);
     }
+}
+
+::REObjectInfo* RETypeDefinition::get_managed_vt() const {
+#if TDB_VER > 49
+    return (::REObjectInfo*)this->managed_vt;
+#else
+    return (::REObjectInfo*)&sdk::VM::get()->types[this->get_index()];
+#endif
+}
+
+uint32_t RETypeDefinition::get_flags() const {
+#if TDB_VER > 49
+    return this->type_flags;
+#else
+    return 0;
+#endif
 }
 
 bool RETypeDefinition::should_pass_by_pointer() const {

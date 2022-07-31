@@ -6,11 +6,13 @@
 
 #include "RETypeCLR.hpp"
 #include "ReClass.hpp"
+#include "TDBVer.hpp"
 
 class REManagedObject;
 
 // Manual definitions of REClassInfo because ReClass doesn't have bitfields like this.
 namespace sdk {
+struct RETypeDefVersion71;
 struct RETypeDefVersion69;
 struct RETypeDefVersion67;
 struct RETypeDefVersion66;
@@ -20,36 +22,43 @@ struct REField;
 struct REMethodDefinition;
 struct REProperty;
 struct RETypeDefinition;
+struct GenericListData;
 
-#ifdef MHRISE
-// it's version 70 but looks the same for now i guess
-#define TYPE_INDEX_BITS 18
-using RETypeDefinition_ = sdk::RETypeDefVersion69;
-#elif defined(RE8)
-#define TYPE_INDEX_BITS 18
-using RETypeDefinition_ = sdk::RETypeDefVersion69;
-#elif defined(DMC5)
-#define TYPE_INDEX_BITS 17
-using RETypeDefinition_ = sdk::RETypeDefVersion67;
-#elif defined(RE2) || defined(RE3)
-#ifdef RE2_TDB66
-#define TYPE_INDEX_BITS 16
-using RETypeDefinition_ = sdk::RETypeDefVersion66;
-#elif defined(RE3_TDB67)
-#define TYPE_INDEX_BITS 17
-using RETypeDefinition_ = sdk::RETypeDefVersion67;
-#else
-#define TYPE_INDEX_BITS 18
-using RETypeDefinition_ = sdk::RETypeDefVersion69;
-#endif
-#elif RE7
-#ifdef RE7_TDB49
-#define TYPE_INDEX_BITS 16
-using RETypeDefinition_ = sdk::RETypeDefVersion49;
-#else
-#define TYPE_INDEX_BITS 18
-using RETypeDefinition_ = sdk::RETypeDefVersion69;
-#endif
+struct RETypeDefVersion71 {
+    uint64_t index : TYPE_INDEX_BITS;
+    uint64_t parent_typeid : TYPE_INDEX_BITS;
+    uint64_t declaring_typeid : TYPE_INDEX_BITS;
+    uint64_t underlying_typeid : 7;
+
+   	uint64_t array_typeid_TBD : TYPE_INDEX_BITS;
+   	uint64_t element_typeid_TBD : TYPE_INDEX_BITS;
+
+    uint64_t impl_index : 18;
+    uint64_t system_typeid : 7;
+
+    uint32_t type_flags;
+    uint32_t size;
+    uint32_t fqn_hash;
+    uint32_t type_crc;
+    uint64_t default_ctor : 22;
+    uint64_t member_method : 22;
+    uint64_t member_field : TYPE_INDEX_BITS;
+    uint32_t num_member_prop : 12;
+    uint32_t member_prop : TYPE_INDEX_BITS;
+
+    uint32_t unk_data : 26;
+    uint32_t object_type : 3;
+
+    int64_t unk_data_before_generics : 26;
+	int64_t generics : 26;
+  	int64_t interfaces : 12;
+    struct sdk::RETypeCLR* type;
+    class ::REObjectInfo* managed_vt;
+};
+
+#if TDB_VER >= 71
+static_assert(sizeof(RETypeDefVersion71) == 0x48, "RETypeDefVersion71 has wrong size");
+static_assert(offsetof(RETypeDefVersion71, type_crc) == 0x1C);
 #endif
 
 struct RETypeDefVersion69 {
@@ -303,13 +312,17 @@ struct RETypeDefinition : public sdk::RETypeDefinition_ {
     const char* get_name() const;
 
     std::string get_full_name() const;
+    std::vector<std::string> get_name_hierarchy() const;
 
     sdk::RETypeDefinition* get_declaring_type() const;
     sdk::RETypeDefinition* get_parent_type() const;
     sdk::RETypeDefinition* get_underlying_type() const;
+    sdk::RETypeDefinition* get_generic_type_definition() const;
     sdk::REField* get_field(std::string_view name) const;
     sdk::REMethodDefinition* get_method(std::string_view name) const;
     std::vector<sdk::REMethodDefinition*> get_methods(std::string_view name) const;
+    std::vector<sdk::RETypeDefinition*> get_generic_argument_types() const;
+    sdk::GenericListData* get_generic_data() const;
 
     uint32_t get_index() const;
     int32_t get_fieldptr_offset() const;
@@ -317,13 +330,15 @@ struct RETypeDefinition : public sdk::RETypeDefinition_ {
     bool is_a(sdk::RETypeDefinition* other) const;
     bool is_a(std::string_view other) const;
 
-    via::clr::VMObjType get_vm_obj_type() const;
+    ::via::clr::VMObjType get_vm_obj_type() const;
     bool is_value_type() const;
     bool is_enum() const;
     bool is_array() const;
     bool is_by_ref() const;
     bool is_pointer() const;
     bool is_primitive() const;
+    bool is_generic_type_definition() const;
+    bool is_generic_type() const;
 
     bool should_pass_by_pointer() const;
 
@@ -337,8 +352,10 @@ struct RETypeDefinition : public sdk::RETypeDefinition_ {
     void* get_instance() const;
     void* create_instance() const;
     ::REManagedObject* create_instance_full(bool simplify = false);
+    ::REObjectInfo* get_managed_vt() const;
+    uint32_t get_flags() const;
 
 private:    
-    void set_vm_obj_type(via::clr::VMObjType type); // for REFramework shenanigans only!
+    void set_vm_obj_type(::via::clr::VMObjType type); // for REFramework shenanigans only!
 };
 } // namespace sdk
