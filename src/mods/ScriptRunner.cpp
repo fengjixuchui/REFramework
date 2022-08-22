@@ -79,8 +79,6 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data) {
     re["msg"] = api::re::msg;
     re["on_pre_application_entry"] = [this](const char* name, sol::function fn) { m_pre_application_entry_fns.emplace(utility::hash(name), fn); };
     re["on_application_entry"] = [this](const char* name, sol::function fn) { m_application_entry_fns.emplace(utility::hash(name), fn); };
-    re["on_update_transform"] = [this](RETransform* transform, sol::function fn) { m_update_transform_fns.emplace(transform, fn); };
-    re["on_pre_update_transform"] = [this](RETransform* transform, sol::function fn) { m_pre_update_transform_fns.emplace(transform, fn); };
     re["on_pre_gui_draw_element"] = [this](sol::function fn) { m_pre_gui_draw_element_fns.emplace_back(fn); };
     re["on_gui_draw_element"] = [this](sol::function fn) { m_gui_draw_element_fns.emplace_back(fn); };
     re["on_draw_ui"] = [this](sol::function fn) { m_on_draw_ui_fns.emplace_back(fn); };
@@ -264,6 +262,7 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data) {
     );
 
     m_lua.new_usertype<REFramework>("REFramework",
+        "save_config", &REFramework::save_config,
         "is_drawing_ui", &REFramework::is_drawing_ui,
         "get_game_name", &REFramework::get_game_name,
         "get_version_string", []() -> std::string { 
@@ -319,6 +318,9 @@ void ScriptState::run_script(const std::string& p) {
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
         api::re::msg(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error((std::stringstream{} << "Unknown error when running script " << p).str());
+        api::re::msg((std::stringstream{} << "Unknown error when running script " << p).str().c_str());
     }
 
     m_lua["package"]["path"] = old_path;
@@ -343,6 +345,8 @@ void ScriptState::on_frame() {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown error in on_frame");
     }
 }
 
@@ -359,11 +363,17 @@ void ScriptState::on_draw_ui() {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown error in on_draw_ui");
     }
 }
 
 void ScriptState::on_pre_application_entry(size_t hash) {
     try {
+        if (m_pre_application_entry_fns.empty()) {
+            return;
+        }
+
         auto range = m_pre_application_entry_fns.equal_range(hash);
 
         if (range.first != range.second) {
@@ -375,11 +385,17 @@ void ScriptState::on_pre_application_entry(size_t hash) {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown exception in on_pre_application_entry");
     }
 }
 
 void ScriptState::on_application_entry(size_t hash) {
     try {
+        if (m_application_entry_fns.empty()) {
+            return;
+        }
+
         auto range = m_application_entry_fns.equal_range(hash);
 
         if (range.first != range.second) {
@@ -391,6 +407,8 @@ void ScriptState::on_application_entry(size_t hash) {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown exception in on_application_entry");
     }
 
     if (hash == "EndRendering"_fnv && m_gc_data.gc_handler == ScriptState::GarbageCollectionHandler::REFRAMEWORK_MANAGED) {
@@ -420,38 +438,6 @@ void ScriptState::on_application_entry(size_t hash) {
     }
 }
 
-void ScriptState::on_pre_update_transform(RETransform* transform) {
-    try {
-        auto range = m_pre_update_transform_fns.equal_range(transform);
-
-        if (range.first != range.second) {
-            std::scoped_lock _{ m_execution_mutex };
-
-            for (auto it = range.first; it != range.second; ++it) {
-                handle_protected_result(it->second(transform));
-            }
-        }
-    } catch (const std::exception& e) {
-        ScriptRunner::get()->spew_error(e.what());
-    }
-}
-
-void ScriptState::on_update_transform(RETransform* transform) {
-    try {
-        auto range = m_update_transform_fns.equal_range(transform);
-
-        if (range.first != range.second) {
-            std::scoped_lock _{ m_execution_mutex };
-
-            for (auto it = range.first; it != range.second; ++it) {
-                handle_protected_result(it->second(transform));
-            }
-        }
-    } catch (const std::exception& e) {
-        ScriptRunner::get()->spew_error(e.what());
-    }
-}
-
 bool ScriptState::on_pre_gui_draw_element(REComponent* gui_element, void* context) {
     bool any_false = false;
 
@@ -465,6 +451,8 @@ bool ScriptState::on_pre_gui_draw_element(REComponent* gui_element, void* contex
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown exception in on_pre_gui_draw_element");
     }
 
     return !any_false;
@@ -479,6 +467,8 @@ void ScriptState::on_gui_draw_element(REComponent* gui_element, void* context) {
         }
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown exception in on_gui_draw_element");
     }
 }
 
@@ -495,6 +485,8 @@ void ScriptState::on_script_reset() try {
     }
 } catch (const std::exception& e) {
     ScriptRunner::get()->spew_error(e.what());
+} catch (...) {
+    ScriptRunner::get()->spew_error("Unknown exception in on_script_reset");
 }
 
 void ScriptState::on_config_save() try {
@@ -506,6 +498,8 @@ void ScriptState::on_config_save() try {
 }
 catch (const std::exception& e) {
     ScriptRunner::get()->spew_error(e.what());
+} catch (...) {
+    ScriptRunner::get()->spew_error("Unknown exception in on_config_save");
 }
 
 void ScriptState::add_hook(
@@ -560,6 +554,8 @@ void ScriptState::install_hooks() {
                     }
                 } catch (const std::exception& e) {
                     ScriptRunner::get()->spew_error(e.what());
+                } catch (...) {
+                    ScriptRunner::get()->spew_error("Unknown exception in pre_hook");
                 }
 
                 return result;
@@ -581,6 +577,8 @@ void ScriptState::install_hooks() {
                     ret_val = (uintptr_t)script_result.get<void*>();
                 } catch (const std::exception& e) {
                     ScriptRunner::get()->spew_error(e.what());
+                } catch (...) {
+                    ScriptRunner::get()->spew_error("Unknown exception in post_hook");
                 }
             },
             ignore_jmp_object.is<bool>() ? ignore_jmp_object.as<bool>() : false);
@@ -639,6 +637,8 @@ std::optional<std::string> ScriptRunner::on_initialize() {
 }
 
 void ScriptRunner::on_config_load(const utility::Config& cfg) {
+    std::scoped_lock _{m_access_mutex};
+
     for (IModValue& option : m_options) {
         option.config_load(cfg);
     }
@@ -790,11 +790,14 @@ void ScriptRunner::on_draw_ui() {
             ImGui::TextWrapped("No Script Errors... yet!");
         }
 
-        if (!m_loaded_scripts.empty()) {
-            ImGui::Text("Loaded scripts:");
+        if (!m_known_scripts.empty()) {
+            ImGui::Text("Known scripts:");
 
-            for (auto&& name : m_loaded_scripts) {
-                ImGui::Text(name.c_str());
+            for (auto&& name : m_known_scripts) {
+                if (ImGui::Checkbox(name.data(), &m_loaded_scripts_map[name])) {
+                    reset_scripts();
+                    break;
+                }
             }
         } else {
             ImGui::Text("No scripts loaded.");
@@ -830,26 +833,6 @@ void ScriptRunner::on_application_entry(void* entry, const char* name, size_t ha
     }
 
     m_state->on_application_entry(hash);
-}
-
-void ScriptRunner::on_pre_update_transform(RETransform* transform) {
-    std::scoped_lock _{ m_access_mutex };
-
-    if (m_state == nullptr) {
-        return;
-    }
-
-    m_state->on_pre_update_transform(transform);
-}
-
-void ScriptRunner::on_update_transform(RETransform* transform) {
-    std::scoped_lock _{ m_access_mutex };
-
-    if (m_state == nullptr) {
-        return;
-    }
-
-    m_state->on_update_transform(transform);
 }
 
 bool ScriptRunner::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
@@ -914,6 +897,7 @@ void ScriptRunner::reset_scripts() {
     m_state.reset();
     m_state = std::make_unique<ScriptState>(make_gc_data());
     m_loaded_scripts.clear();
+    m_known_scripts.clear();
 
     std::string module_path{};
 
@@ -932,8 +916,19 @@ void ScriptRunner::reset_scripts() {
         auto&& path = entry.path();
 
         if (path.has_extension() && path.extension() == ".lua") {
-            m_state->run_script(path.string());
-            m_loaded_scripts.emplace_back(path.filename().string());
+            if (!m_loaded_scripts_map.contains(path.filename().string())) {
+                m_loaded_scripts_map.emplace(path.filename().string(), true);
+            }
+
+            if (m_loaded_scripts_map[path.filename().string()] == true) {
+                m_state->run_script(path.string());
+                m_loaded_scripts.emplace_back(path.filename().string());
+            }
+
+            m_known_scripts.emplace_back(path.filename().string());
         }
     }
+
+    std::sort(m_known_scripts.begin(), m_known_scripts.end());
+    std::sort(m_loaded_scripts.begin(), m_loaded_scripts.end());
 }
