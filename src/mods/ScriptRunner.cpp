@@ -415,17 +415,15 @@ void ScriptState::on_pre_application_entry(size_t hash) {
 
 void ScriptState::on_application_entry(size_t hash) {
     try {
-        if (m_application_entry_fns.empty()) {
-            return;
-        }
+        if (!m_application_entry_fns.empty()) {
+            auto range = m_application_entry_fns.equal_range(hash);
 
-        auto range = m_application_entry_fns.equal_range(hash);
+            if (range.first != range.second) {
+                std::scoped_lock _{ m_execution_mutex };
 
-        if (range.first != range.second) {
-            std::scoped_lock _{ m_execution_mutex };
-
-            for (auto it = range.first; it != range.second; ++it) {
-                handle_protected_result(it->second());
+                for (auto it = range.first; it != range.second; ++it) {
+                    handle_protected_result(it->second());
+                }
             }
         }
     } catch (const std::exception& e) {
@@ -934,7 +932,7 @@ void ScriptRunner::reset_scripts() {
     spdlog::info("[ScriptRunner] Module path {}", module_path);
 
     // Load from the reframework/autorun directory.
-    auto autorun_path = std::filesystem::path{module_path}.parent_path() / "reframework" / "autorun";
+    const auto autorun_path = REFramework::get_persistent_dir() / "reframework" / "autorun";
 
     spdlog::info("[ScriptRunner] Creating directories {}", autorun_path.string());
     std::filesystem::create_directories(autorun_path);
