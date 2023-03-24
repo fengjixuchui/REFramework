@@ -216,10 +216,12 @@ REFramework::REFramework(HMODULE reframework_module)
     std::chrono::steady_clock::time_point next_log = now;
 
     while (GetModuleHandleA("d3d12.dll") == nullptr) {
+        now = std::chrono::steady_clock::now();
         if (now >= next_log) {
             spdlog::info("[REFramework] Waiting for D3D12...");
             next_log = now + 1s;
         }
+        Sleep(50);
     }
 
     while (LoadLibraryA("d3d12.dll") == nullptr) {
@@ -727,6 +729,27 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
 
     bool is_mouse_moving{false};
     switch (message) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
+        const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
+
+        if (w_param == menu_key && !m_last_keys[w_param]) {
+            std::lock_guard _{m_input_mutex};
+
+            set_draw_ui(!m_draw_ui);
+        }
+
+        m_last_keys[w_param] = true;
+        
+        break;
+    }
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        m_last_keys[w_param] = false;
+        break;
+    case WM_KILLFOCUS:
+        std::fill(std::begin(m_last_keys), std::end(m_last_keys), false);
+        break;
     case WM_INPUT: {
         // RIM_INPUT means the window has focus
         if (GET_RAWINPUT_CODE_WPARAM(w_param) == RIM_INPUT) {
@@ -776,12 +799,25 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
             if (message == WM_INPUT && GET_RAWINPUT_CODE_WPARAM(w_param) == RIM_INPUTSINK)
                 return false;
 
-            if (m_is_ui_focused) {
-                if (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput)
-                    return false;
-            } else {
-                if (!is_mouse_moving && (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput))
-                    return false;
+            static std::unordered_set<UINT> forcefully_allowed_messages {
+                WM_DEVICECHANGE,
+                WM_SHOWWINDOW,
+                WM_ACTIVATE,
+                WM_ACTIVATEAPP,
+                WM_CLOSE,
+                WM_DPICHANGED,
+                WM_SIZING,
+                WM_MOUSEACTIVATE
+            };
+
+            if (!forcefully_allowed_messages.contains(message)) {
+                if (m_is_ui_focused) {
+                    if (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput)
+                        return false;
+                } else {
+                    if (!is_mouse_moving && (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput))
+                        return false;
+                }
             }
         }
     }
@@ -801,7 +837,7 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
 
 // this is unfortunate.
 void REFramework::on_direct_input_keys(const std::array<uint8_t, 256>& keys) {
-    const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
+    /*const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
 
     if (keys[menu_key] && m_last_keys[menu_key] == 0) {
         std::lock_guard _{m_input_mutex};
@@ -809,7 +845,7 @@ void REFramework::on_direct_input_keys(const std::array<uint8_t, 256>& keys) {
         set_draw_ui(!m_draw_ui);
     }
 
-    m_last_keys = keys;
+    m_last_keys = keys;*/
 }
 
 std::filesystem::path REFramework::get_persistent_dir() {
