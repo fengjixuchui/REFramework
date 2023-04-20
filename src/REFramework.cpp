@@ -133,6 +133,9 @@ void REFramework::hook_monitor() {
     }
 }
 
+typedef NTSTATUS (WINAPI* PFN_LdrLockLoaderLock)(ULONG Flags, ULONG *State, ULONG_PTR *Cookie);
+typedef NTSTATUS (WINAPI* PFN_LdrUnlockLoaderLock)(ULONG Flags, ULONG_PTR Cookie);
+
 REFramework::REFramework(HMODULE reframework_module)
     : m_reframework_module{reframework_module}
     , m_game_module{GetModuleHandle(0)}
@@ -161,6 +164,9 @@ REFramework::REFramework(HMODULE reframework_module)
     const auto halfway_module = (uintptr_t)m_game_module + (module_size / 2);
     const auto pre_allocated_buffer = (uintptr_t)AllocateBuffer((LPVOID)halfway_module); // minhook function
     spdlog::info("Preallocated buffer: {:x}", pre_allocated_buffer);
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
 
 #ifdef DEBUG
     spdlog::set_level(spdlog::level::debug);
@@ -268,10 +274,33 @@ REFramework::REFramework(HMODULE reframework_module)
         }
     });
     startup_lookup_thread->detach();
+#endif
 
-    utility::ThreadSuspender ___{};
+#if defined(RE8) || defined(RE4)
+    ULONG_PTR loader_magic = 0;
+    auto lock_loader = (PFN_LdrLockLoaderLock)GetProcAddress(ntdll, "LdrLockLoaderLock");
+    auto unlock_loader = (PFN_LdrUnlockLoaderLock)GetProcAddress(ntdll, "LdrUnlockLoaderLock");
+
+    if (lock_loader != nullptr && unlock_loader != nullptr) {
+        lock_loader(0, NULL, &loader_magic);
+    }
+    utility::ThreadSuspender suspender{};
+    if (lock_loader != nullptr && unlock_loader != nullptr) {
+        unlock_loader(0, loader_magic);
+    }
+
     IntegrityCheckBypass::ignore_application_entries();
+
+#if defined(RE8) || defined(RE4)
+    // Also done on RE4 because some of the scans are the same.
     IntegrityCheckBypass::immediate_patch_re8();
+#endif
+
+#if defined(RE4)
+    // Fixes new code added in RE4 only.
+    IntegrityCheckBypass::immediate_patch_re4();
+#endif
+    suspender.resume();
 #endif
 
     // Hooking D3D12 initially because we need to retrieve the command queue before the first frame then switch to D3D11 if it failed later
@@ -729,6 +758,24 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
 
     bool is_mouse_moving{false};
     switch (message) {
+    case WM_LBUTTONDOWN:
+        m_last_keys[VK_LBUTTON] = true;
+        break;
+    case WM_LBUTTONUP:
+        m_last_keys[VK_LBUTTON] = false;
+        break;
+    case WM_RBUTTONDOWN:
+        m_last_keys[VK_RBUTTON] = true;
+        break;
+    case WM_RBUTTONUP:
+        m_last_keys[VK_RBUTTON] = false;
+        break;
+    case WM_MBUTTONDOWN:
+        m_last_keys[VK_MBUTTON] = true;
+        break;
+    case WM_MBUTTONUP:
+        m_last_keys[VK_MBUTTON] = false;
+        break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
@@ -1010,6 +1057,9 @@ void REFramework::invalidate_device_objects() {
 void REFramework::draw_ui() {
     std::lock_guard _{m_input_mutex};
 
+    ImGui::GetIO().MouseDrawCursor = m_draw_ui && REFrameworkConfig::get()->is_always_show_cursor();
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange; // causes bugs with the cursor
+
     if (!m_draw_ui) {
         remove_set_cursor_pos_patch();
 
@@ -1059,7 +1109,8 @@ void REFramework::draw_ui() {
 
     ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_Once);
-    ImGui::Begin("REFramework", &m_draw_ui);
+    bool is_open = true;
+    ImGui::Begin("REFramework", &is_open);
     ImGui::Text("Default Menu Key: Insert");
     ImGui::Checkbox("Transparency", &m_ui_option_transparent);
     ImGui::SameLine();
@@ -1090,7 +1141,9 @@ void REFramework::draw_ui() {
     ImGui::End();
 
     // save the menu state in config
-    if (m_draw_ui != m_last_draw_ui) {
+    if (!is_open) {
+        set_draw_ui(is_open, true);
+    } else if (m_draw_ui != m_last_draw_ui) {
         set_draw_ui(m_draw_ui, true);
     }
 
