@@ -20,7 +20,10 @@
 #include "sdk/regenny/re2_tdb70/via/Window.hpp"
 #include "sdk/regenny/re2_tdb70/via/SceneView.hpp"
 #elif TDB_VER >= 71
-#ifdef RE4
+#ifdef SF6
+#include "sdk/regenny/sf6/via/Window.hpp"
+#include "sdk/regenny/sf6/via/SceneView.hpp"
+#elif defined(RE4)
 #include "sdk/regenny/re4/via/Window.hpp"
 #include "sdk/regenny/re4/via/SceneView.hpp"
 #else
@@ -171,6 +174,14 @@ void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
 
         wanted_width = (float)window_width;
         wanted_height = (float)window_height;
+
+        // Might be usable in other games too
+#if defined(SF6)
+        if (!is_gng) {
+            window->borderless_size.w = (float)window_width;
+            window->borderless_size.h = (float)window_height;
+        }
+#endif
     }
 
     //auto out = original_func(scene_view, result);
@@ -371,7 +382,7 @@ bool VR::on_pre_overlay_layer_draw(sdk::renderer::layer::Overlay* layer, void* r
     // NOT RE3
     // for some reason RE3 has weird issues with the overlay rendering
     // causing double vision
-#if (TDB_VER < 70 and not defined(RE3)) or (TDB_VER >= 70 and (not defined(RE3) and not defined(RE2) and not defined(RE7) and not defined(RE4)))
+#if (TDB_VER < 70 and not defined(RE3)) or (TDB_VER >= 70 and (not defined(RE3) and not defined(RE2) and not defined(RE7) and not defined(RE4) and not defined(SF6)))
     if (m_allow_engine_overlays->value()) {
         return true;
     }
@@ -1153,6 +1164,7 @@ std::optional<std::string> VR::hijack_camera() {
 
 std::optional<std::string> VR::hijack_wwise_listeners() {
 #ifndef RE4
+#ifndef SF6
     const auto t = sdk::find_type_definition("via.wwise.WwiseListener");
 
     if (t == nullptr) {
@@ -1211,6 +1223,7 @@ std::optional<std::string> VR::hijack_wwise_listeners() {
     if (!g_wwise_listener_update_hook->create()) {
         return "VR init failed: via.wwise.WwiseListener update native function hook failed.";
     }
+#endif
 #endif
 
     return std::nullopt;
@@ -1823,7 +1836,9 @@ void VR::disable_bad_effects() {
         return;
     }
 
-    if (m_force_fps_settings->value() && get_framerate_setting_method != nullptr && set_framerate_setting_method != nullptr) {
+    static const auto is_sf6 = utility::get_module_path(utility::get_executable())->find("StreetFighter") != std::string::npos;
+
+    if (!is_sf6 && m_force_fps_settings->value() && get_framerate_setting_method != nullptr && set_framerate_setting_method != nullptr) {
         const auto framerate_setting = get_framerate_setting_method->call<via::render::RenderConfig::FramerateType>(context, render_config);
 
         // Allow FPS to go above 60
@@ -1834,9 +1849,9 @@ void VR::disable_bad_effects() {
     }
     
     // get_MaxFps on application
-    if (m_force_fps_settings->value() && application->get_max_fps() < 600.0f) {
+    if (!is_sf6 && m_force_fps_settings->value() && application->get_max_fps() <  600.0f) {
         application->set_max_fps(600.0f);
-        spdlog::info("[VR] Max FPS set to 600");
+        spdlog::info("[VR] Max FPS set to {}", 600.0f);
     }
 
     if (m_force_aa_settings->value() && get_antialiasing_method != nullptr && set_antialiasing_method != nullptr) {
@@ -1946,15 +1961,21 @@ void VR::disable_bad_effects() {
         }
     }
 
+
     // Causes crashes on D3D11.
-    if (g_framework->get_renderer_type() == REFramework::RendererType::D3D12) {
+    if (!is_sf6 && g_framework->get_renderer_type() == REFramework::RendererType::D3D12 && m_enable_asynchronous_rendering->value()) {
         if (get_delay_render_enable_method != nullptr && set_delay_render_enable_method != nullptr) {
             const auto is_delay_render_enabled = get_delay_render_enable_method->call<bool>(context);
 
-            if (is_delay_render_enabled == m_enable_asynchronous_rendering) {
-                set_delay_render_enable_method->call<void*>(context, !m_enable_asynchronous_rendering);
+            if (is_delay_render_enabled == true) {
+                set_delay_render_enable_method->call<void*>(context, !m_enable_asynchronous_rendering->value());
                 spdlog::info("[VR] Delay render modified");
             }
+        }
+    } else if (is_sf6) {
+        // Must be on in SF6 or left eye gets stuck
+        if (set_delay_render_enable_method != nullptr) {
+            set_delay_render_enable_method->call<void*>(context, true);
         }
     }
 
@@ -2254,6 +2275,17 @@ void VR::on_present() {
 }
 
 void VR::on_post_present() {
+    auto runtime = get_runtime();
+
+    if (!get_runtime()->loaded) {
+        return;
+    }
+
+    const auto renderer = g_framework->get_renderer_type();
+
+    if (renderer == REFramework::RendererType::D3D12) {
+        m_d3d12.on_post_present(this);
+    }
 }
 
 void VR::on_update_transform(RETransform* transform) {
@@ -2669,8 +2701,8 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                         };
                         
                         // Fix position of interaction icons
-                        if (name_hash == "GUI_FloatIcon"_fnv || name_hash == "RogueFloatIcon"_fnv) { // RE2, RE3
-                            if (name_hash == "GUI_FloatIcon"_fnv) {
+                        if (name_hash == "GUI_FloatIcon"_fnv || name_hash == "RogueFloatIcon"_fnv || name_hash == "Gui_FloatIcon"_fnv) { // RE2, RE3, RE4
+                            if (name_hash == "GUI_FloatIcon"_fnv || name_hash == "Gui_FloatIcon"_fnv) {
                                 m_last_interaction_display = std::chrono::steady_clock::now();
                             }
                         
@@ -3709,6 +3741,7 @@ void VR::on_draw_ui() {
     m_force_lensflares_settings->draw("Force Disable Lens Flares");
     m_force_dynamic_shadows_settings->draw("Force Enable Dynamic Shadows");
     m_allow_engine_overlays->draw("Allow Engine Overlays");
+    m_enable_asynchronous_rendering->draw("Enable Asynchronous Rendering");
 
     if (ImGui::TreeNode("Desktop Recording Fix")) {
         ImGui::PushID("Desktop");
@@ -3726,7 +3759,6 @@ void VR::on_draw_ui() {
     ImGui::Checkbox("Disable Backbuffer Size Override", &m_disable_backbuffer_size_override);
     ImGui::Checkbox("Disable Temporal Fix", &m_disable_temporal_fix);
     ImGui::Checkbox("Disable Post Effect Fix", &m_disable_post_effect_fix);
-    ImGui::Checkbox("Enable Asynchronous Rendering", &m_enable_asynchronous_rendering);
     
     const double min_ = 0.0;
     const double max_ = 25.0;

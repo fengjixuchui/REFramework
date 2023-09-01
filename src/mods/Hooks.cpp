@@ -353,6 +353,8 @@ std::optional<std::string> Hooks::hook_all_application_entries() {
         return "Failed to get via.Application";
     }
 
+    spdlog::info("[Hooks] Found via.Application at {:x}", (uintptr_t)application);
+
     auto generate_mov_rdx = [](uintptr_t target) {
         std::vector<uint8_t> mov_rdx{ 0x48, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
         *(uintptr_t*)&mov_rdx[2] = target;
@@ -493,6 +495,7 @@ std::optional<std::string> Hooks::hook_update_before_lock_scene() {
 }
 
 std::optional<std::string> Hooks::hook_lightshaft_draw() {
+#if 0
     // Create a fake via.render.LightShaft instance
     // so we can get the draw method and hook it.
     auto lightshaft_t = sdk::find_type_definition("via.render.LightShaft");
@@ -530,6 +533,7 @@ std::optional<std::string> Hooks::hook_lightshaft_draw() {
     if (!m_lightshaft_draw_hook->create()) {
         return "Failed to hook via::render::LightShaft::draw";
     }
+#endif
 
     return std::nullopt;
 }
